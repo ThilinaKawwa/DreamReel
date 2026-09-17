@@ -1,0 +1,10 @@
+{
+  "name": "Dream Reel",
+  "short_name": "Dream Reel",
+  "description": "Tell it your dream. Watch it come to life.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0b0a1f",
+  "theme_color": "#0b0a1f",
+  "icons": [{ "src": "/icon.png", "sizes": "512x512", "type": "image/png" }]
+}

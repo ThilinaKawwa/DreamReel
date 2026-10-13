@@ -31,8 +31,11 @@ function Invite() {
   }
   return (
     <section className="guru invite" aria-labelledby="guru-invite">
+      <div className="guru-hero">
+        <img src="/orin.jpg" alt={`${GURU_NAME}, the Dream Guru`} width={900} height={1117} />
+      </div>
       <div className="guru-head">
-        <span className="guru-avatar" aria-hidden="true">☾</span>
+        <img className="guru-avatar" src="/orin-avatar-256.jpg" alt="" width={56} height={56} />
         <div>
           <div className="eyebrow accent">The Dream Guru</div>
           <h3 id="guru-invite">{GURU_NAME} is waiting to read this dream</h3>
@@ -178,7 +181,7 @@ function Guru({ dream, reading, onReading }) {
   return (
     <section className="guru" aria-labelledby="guru-title">
       <div className="guru-head">
-        <span className="guru-avatar" aria-hidden="true">☾</span>
+        <img className="guru-avatar" src="/orin-avatar-256.jpg" alt="" width={56} height={56} />
         <div>
           <div className="eyebrow accent">The Dream Guru</div>
           <h3 id="guru-title">{GURU_NAME}'s reading</h3>
@@ -202,16 +205,24 @@ function Guru({ dream, reading, onReading }) {
         <>
           <div className="chat" aria-live="polite">
             {messages.map((m) => (
-              <div key={m.id} className={`msg ${m.role}`}>
+              <div key={m.id} className={`msg-row ${m.role}`}>
+                {m.role === 'assistant' && <img className="msg-avatar" src="/orin-avatar-96.jpg" alt="" width={32} height={32} />}
+                <div className={`msg ${m.role}`}>
                 <Markdown text={m.content} />
                 {m.role === 'assistant' && !String(m.id).startsWith('a-') && (
                   <button className="msg-hear" onClick={() => hear(m.id, { messageId: m.id })} aria-label={speakingId === m.id ? 'Stop' : 'Hear this'}>
                     {speakingId === m.id ? '■ Stop' : '▶ Hear'}
                   </button>
                 )}
+                </div>
               </div>
             ))}
-            {thinking && <div className="msg assistant thinking">{GURU_NAME} is reflecting<span className="dots" /></div>}
+            {thinking && (
+              <div className="msg-row assistant">
+                <img className="msg-avatar glow" src="/orin-avatar-96.jpg" alt="" width={32} height={32} />
+                <div className="msg assistant thinking">{GURU_NAME} is reflecting<span className="dots" /></div>
+              </div>
+            )}
             <div ref={endRef} />
           </div>
 

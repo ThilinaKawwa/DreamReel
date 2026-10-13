@@ -133,10 +133,15 @@ export default function Profile() {
       </form>
 
       <section className={`plan-card ${premium ? 'premium' : ''}`}>
-        <div className="eyebrow accent">{premium ? 'Premium ✦' : 'Free plan'}</div>
+        <div className="plan-head">
+          <img className="guru-avatar" src="/orin-avatar-256.jpg" alt="" width={56} height={56} />
+          <div>
+            <div className="eyebrow accent">{premium ? 'Premium ✦' : 'Free plan'}</div>
+            <h3 style={{ marginTop: 4 }}>{premium ? `${GURU_NAME} is yours` : `Meet ${GURU_NAME}, the Dream Guru`}</h3>
+          </div>
+        </div>
         {premium ? (
           <>
-            <h3>{GURU_NAME} is yours</h3>
             <p className="lead">
               Guru readings, voice chat, dream memory and moving reels.
               {plan?.current_period_end && <> Renews {new Date(plan.current_period_end).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}.</>}
@@ -145,7 +150,6 @@ export default function Profile() {
           </>
         ) : (
           <>
-            <h3>Meet {GURU_NAME}, the Dream Guru</h3>
             <p className="lead">A wise reading of every dream, conversations by voice, a guide who remembers your dreams — and reels that truly move.</p>
             <button className="btn primary block" onClick={upgrade} disabled={busy || plan === null}>✦ Go Premium · {PREMIUM_PRICE_LABEL}</button>
           </>

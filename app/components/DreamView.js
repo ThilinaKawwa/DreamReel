@@ -2,70 +2,67 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import Player from '@/components/Player';
+import ReelHero from '@/components/ReelHero';
 import GuruPanel from '@/components/GuruPanel';
 import { getBrowserSupabase } from '@/lib/supabase';
 import { api, startPremium } from '@/lib/api';
 import { dreamDate } from '@/lib/profile';
+import { track } from '@/lib/analytics';
+import { PREMIUM_ENABLED } from '@/lib/features';
+import { BRAND, siteUrl } from '@/lib/brand';
 
 const ACTIVE = ['active', 'trialing'];
 
-export default function DreamView({ dream: initial, id }) {
-  const [dream, setDream] = useState(initial);
-  const [toast, setToast] = useState('');
+/**
+ * A single dream. Its owner sees their film (made automatically) with Download and
+ * Share. Anyone else holding a shared link sees the reel and an invitation to make theirs.
+ */
+export default function DreamView({ dream: shared, id }) {
+  const [dream, setDream] = useState(shared);
+  const [checked, setChecked] = useState(false);
   const [isOwner, setIsOwner] = useState(false);
-  const [premium, setPremium] = useState(null); // null = still checking
+  const [premium, setPremium] = useState(PREMIUM_ENABLED ? null : false);
   const [reading, setReading] = useState(null);
+  const [details, setDetails] = useState(false);
+  const [toast, setToast] = useState('');
   const [animError, setAnimError] = useState('');
 
-  const say = useCallback((msg) => { setToast(msg); setTimeout(() => setToast(''), 2200); }, []);
+  const say = useCallback((msg) => { setToast(msg); setTimeout(() => setToast(''), 2600); }, []);
 
-  // Who is watching? The owner gets the Guru; everyone else just the reel.
+  // Is this my dream? Owners load the full record (private dreams never reach the server page).
   useEffect(() => {
     const supabase = getBrowserSupabase();
     let cancelled = false;
     supabase.auth.getSession().then(async ({ data }) => {
       const uid = data.session?.user?.id;
-      let d = dream;
-      if (!d && uid) {
-        const { data: own } = await supabase.from('dreams').select('*').eq('id', id).maybeSingle();
-        if (own && !cancelled) { setDream(own); d = own; }
+      if (uid) {
+        const { data: own } = await supabase.from('dreams').select('*').eq('id', id).eq('user_id', uid).maybeSingle();
+        if (own && !cancelled) {
+          setDream(own);
+          setIsOwner(true);
+          const isNew = new URLSearchParams(window.location.search).has('new');
+          if (!isNew) track('dream_reopened', { status: own.status }, { onceKey: `reopen-${id}` });
+          if (PREMIUM_ENABLED) await loadPremium(supabase, uid, cancelled);
+        }
       }
-      if (!d || !uid || d.user_id !== uid) { if (!cancelled) setPremium(false); return; }
-      if (cancelled) return;
-      setIsOwner(true);
+      if (!cancelled) { setChecked(true); if (!PREMIUM_ENABLED) setPremium(false); }
+    });
+    return () => { cancelled = true; };
 
+    async function loadPremium(supabase, uid) {
       const upgraded = new URLSearchParams(window.location.search).has('upgraded');
       if (upgraded) say('Welcome to Premium ✦');
-      // Stripe tells us about a new payment a few seconds after checkout, so keep checking briefly.
       for (let i = 0; i < (upgraded ? 8 : 1); i++) {
         const { data: profile } = await supabase.from('profiles').select('plan, subscription_status').eq('user_id', uid).maybeSingle();
         const ok = profile?.plan === 'premium' && ACTIVE.includes(profile?.subscription_status);
-        if (ok || i === (upgraded ? 7 : 0)) { if (!cancelled) setPremium(ok); break; }
+        if (ok || i === (upgraded ? 7 : 0)) { setPremium(ok); break; }
         await new Promise((r) => setTimeout(r, 2500));
       }
       const { data: r } = await supabase.from('dream_readings').select('*').eq('dream_id', id).maybeSingle();
-      if (r && !cancelled) setReading(r);
-    });
-    return () => { cancelled = true; };
+      if (r) setReading(r);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
-
-  // While the scenes are being animated, check every few seconds and swap the clips in.
-  useEffect(() => {
-    if (!isOwner || dream?.video_status !== 'animating') return;
-    let stop = false;
-    const tick = async () => {
-      try {
-        const d = await api(`/api/dreams/${id}/video`, { method: 'GET' });
-        if (stop) return;
-        setDream((x) => ({ ...x, scenes: d.scenes, video_status: d.video_status }));
-        if (d.video_status === 'ready') say('Your dream is moving ✦');
-        if (d.video_status === 'animating') setTimeout(tick, 8000);
-      } catch { if (!stop) setTimeout(tick, 15000); }
-    };
-    const t = setTimeout(tick, 4000);
-    return () => { stop = true; clearTimeout(t); };
-  }, [isOwner, dream?.video_status, id, say]);
 
   const onReading = useCallback((r) => setReading(r), []);
 
@@ -80,18 +77,36 @@ export default function DreamView({ dream: initial, id }) {
     }
   }
 
-  async function share() {
-    const url = window.location.origin + `/d/${id}`;
-    const text = `${dream?.title || 'My dream'} — painted from my dream last night 🌙`;
-    if (navigator.share) { try { await navigator.share({ title: 'Dream Reel', text, url }); } catch {} }
-    else { await navigator.clipboard.writeText(url); say('Link copied'); }
+  // Secondary sharing: a link. Making a link work is an explicit choice, because dreams are private.
+  async function copyLink() {
+    if (!dream.is_public) {
+      const ok = window.confirm('Make a link anyone can open? They will see this reel and its captions — never your recording or what you said word for word.');
+      if (!ok) return;
+      const { error } = await getBrowserSupabase().from('dreams').update({ is_public: true }).eq('id', id);
+      if (error) { say("Couldn't make a link just now."); return; }
+      setDream((d) => ({ ...d, is_public: true }));
+    }
+    const url = `${siteUrl() || window.location.origin}/d/${id}`;
+    try { await navigator.clipboard.writeText(url); say('Link copied'); } catch { window.prompt('Copy this link', url); }
+    track('video_shared', { method: 'link' });
+  }
+
+  async function makePrivate() {
+    const { error } = await getBrowserSupabase().from('dreams').update({ is_public: false }).eq('id', id);
+    if (!error) { setDream((d) => ({ ...d, is_public: false })); say('Link turned off'); }
   }
 
   if (!dream) {
     return (
       <main className="app">
         <div className="create-top"><a href="/" className="iconbtn" aria-label="Back">←</a></div>
-        <div className="empty"><h2>This dream isn't here</h2><p className="lead">It may be private, or the link is wrong.</p></div>
+        <div className="empty">
+          {checked ? (
+            <><h2>This dream isn't here</h2><p className="lead">It may be private, or the link is wrong.</p><a className="btn primary" href="/create">Capture your own dream</a></>
+          ) : (
+            <p className="lead">Opening…</p>
+          )}
+        </div>
       </main>
     );
   }
@@ -111,36 +126,61 @@ export default function DreamView({ dream: initial, id }) {
     );
   }
 
-  const moving = dream.scenes?.filter((s) => s.video_url).length || 0;
+  const summary = isOwner && premium ? reading?.summary || null : null;
 
   return (
     <main className="app" style={{ gap: 14 }}>
       <div className="create-top">
-        <a href="/gallery" className="iconbtn" aria-label="Back">←</a>
-        <div className="center"><div className="eyebrow accent">{dreamDate(dream.created_at)}</div></div>
-        <span className="iconbtn" aria-hidden="true">◎</span>
+        <a href={isOwner ? '/gallery' : '/'} className="iconbtn" aria-label="Back">←</a>
+        <span className="eyebrow accent">{dreamDate(dream.created_at)}</span>
+        <span className="iconbtn" aria-hidden="true" style={{ visibility: 'hidden' }} />
       </div>
-      <h2 className="center">{dream.title}</h2>
-      <Player scenes={dream.scenes} date={date} summary={isOwner && premium ? reading?.summary || null : null} />
 
-      {isOwner && dream.video_status === 'animating' && (
-        <div className="pill live center-pill"><i /> Bringing your scenes to life… {moving}/{dream.scenes.length}</div>
+      {isOwner ? (
+        <ReelHero dream={dream} date={date} summary={summary} />
+      ) : (
+        <Player scenes={dream.scenes} date={date} />
       )}
-      {isOwner && premium && !dream.video_status && (
+
+      <div className="center">
+        <h2>{dream.title || 'Untitled dream'}</h2>
+        <div className="eyebrow" style={{ marginTop: 8 }}>{date}</div>
+      </div>
+
+      {isOwner ? (
+        <div className="reel-secondary">
+          <button className="linkbtn" onClick={() => setDetails((v) => !v)} aria-expanded={details}>{details ? 'Hide dream' : 'View dream'}</button>
+          <span aria-hidden="true">·</span>
+          <button className="linkbtn" onClick={copyLink}>Copy link</button>
+          {dream.is_public && (<><span aria-hidden="true">·</span><button className="linkbtn" onClick={makePrivate}>Turn off link</button></>)}
+          <span aria-hidden="true">·</span>
+          <a className="linkbtn" href="/create">New dream</a>
+        </div>
+      ) : (
+        <section className="invite-card">
+          <p className="lead">{BRAND.promise}</p>
+          <a className="btn primary block" href="/create">Capture your own dream</a>
+        </section>
+      )}
+
+      {isOwner && details && (
+        <section className="dream-details" aria-label="Your dream">
+          {dream.transcript && <p className="transcript">“{dream.transcript}”</p>}
+          <ol className="scene-list">
+            {(dream.scenes || []).map((s, i) => <li key={i}>{s.caption}</li>)}
+          </ol>
+        </section>
+      )}
+
+      {PREMIUM_ENABLED && isOwner && premium && !dream.video_status && (
         <button className="btn block" onClick={animate}>✦ Bring this dream to life (moving video)</button>
       )}
-      {isOwner && premium && dream.video_status === 'failed' && (
-        <button className="btn block" onClick={animate}>↻ Try the moving video again</button>
+      {PREMIUM_ENABLED && isOwner && dream.video_status === 'animating' && (
+        <p className="fine">Moving clips are being made — make the film again once they're ready.</p>
       )}
       {animError && <div className="error">{animError}</div>}
-
-      <div className="actions">
-        <button className="btn primary" id="share" onClick={share}>⤴ Share</button>
-        <a className="btn" href="/create">✦ New dream</a>
-      </div>
-      {dream.transcript && <p className="transcript">“{dream.transcript}”</p>}
-      {isOwner && <GuruPanel dream={dream} premium={premium} reading={reading} onReading={onReading} />}
-      <div className={`toast ${toast ? 'on' : ''}`}>{toast}</div>
+      {PREMIUM_ENABLED && isOwner && <GuruPanel dream={dream} premium={premium} reading={reading} onReading={onReading} />}
+      <div className={`toast ${toast ? 'on' : ''}`} role="status">{toast}</div>
     </main>
   );
 }

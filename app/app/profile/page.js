@@ -5,6 +5,7 @@ import { ensureSession, getBrowserSupabase } from '@/lib/supabase';
 import { getName, setName as saveName } from '@/lib/profile';
 import { api, startPremium } from '@/lib/api';
 import { GURU_NAME, PREMIUM_PRICE_LABEL, TRADITION_OPTIONS } from '@/lib/guru-public';
+import { PREMIUM_ENABLED } from '@/lib/features';
 
 const ACTIVE = ['active', 'trialing'];
 
@@ -132,6 +133,7 @@ export default function Profile() {
         <button className="btn primary" type="submit" style={{ marginTop: 8 }}>{saved ? 'Saved ✓' : 'Save'}</button>
       </form>
 
+      {PREMIUM_ENABLED && (<>
       <section className={`plan-card ${premium ? 'premium' : ''}`}>
         <div className="plan-head">
           <img className="guru-avatar" src="/orin-avatar-256.jpg" alt="" width={56} height={56} />
@@ -166,13 +168,14 @@ export default function Profile() {
           ))}
         </div>
       </section>
+      </>)}
 
       <form className="field" onSubmit={keepAccount}>
         <label htmlFor="email">{isAnon ? 'Keep your dreams safe' : 'Your account'}</label>
         {isAnon ? (
           <>
             <p className="lead" style={{ fontSize: 14 }}>
-              Right now your dreams{premium ? ' and Premium' : ''} live only on this phone. Add your email to keep them forever and open them anywhere.
+              Right now your dreams{premium ? ' and Premium' : ''} live only in this browser. Add your email to keep them forever and open them anywhere.
             </p>
             <input id="email" type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="you@example.com" autoComplete="email" />
             <button className="btn primary" type="submit" disabled={busy || !email.trim()} style={{ marginTop: 8 }}>Save my account</button>
@@ -187,7 +190,7 @@ export default function Profile() {
       {err && <div className="error">{err}</div>}
 
       <div className="list">
-        <div><span>Plan</span>{premium ? 'Premium · moving reels' : 'Free · 3 dreams a day'}</div>
+        <div><span>Plan</span>{premium ? 'Premium' : 'Free · 3 dreams a day'}</div>
         <a href="/gallery"><span>Your dreams</span>Open gallery →</a>
       </div>
     </main>

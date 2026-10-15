@@ -3,13 +3,15 @@
 import { useEffect, useState } from 'react';
 import { ensureSession, getBrowserSupabase } from '@/lib/supabase';
 import { getName, greeting, stamp } from '@/lib/profile';
-import DreamCard from '@/components/DreamCard';
+import DreamCard, { loadReels } from '@/components/DreamCard';
+import { track, noteVisit } from '@/lib/analytics';
 
 export default function Home() {
   const [name, setName] = useState('');
   const [when, setWhen] = useState('');
   const [hello, setHello] = useState('Good morning,');
   const [recent, setRecent] = useState(null);
+  const [reels, setReels] = useState({});
 
   useEffect(() => {
     setName(getName());
@@ -24,6 +26,9 @@ export default function Home() {
         .order('created_at', { ascending: false })
         .limit(6);
       setRecent(data || []);
+      track('landing_view', { dreams: (data || []).length }, { onceKey: 'landing' });
+      noteVisit();
+      setReels(await loadReels(getBrowserSupabase(), (data || []).map((d) => d.id)));
     })().catch(() => setRecent([]));
   }, []);
 
@@ -62,7 +67,7 @@ export default function Home() {
       </div>
       {recent && recent.length > 0 && (
         <div className="strip">
-          {recent.map((d) => <DreamCard key={d.id} dream={d} big />)}
+          {recent.map((d) => <DreamCard key={d.id} dream={d} reel={reels[d.id]} big />)}
         </div>
       )}
       {recent && recent.length === 0 && (

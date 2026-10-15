@@ -2,7 +2,7 @@ import OpenAI from 'openai';
 import { fal } from '@fal-ai/client';
 import { STYLES, DEFAULT_STYLE } from '@/lib/styles';
 import { json, requireUser, getProfile, isPremium, storeBytes } from '@/lib/server';
-import { speak, NARRATOR_VOICE, NARRATOR_STYLE } from '@/lib/guru';
+import { logEvent } from '@/lib/analytics-server';
 import { submitAnimation, FREE_IMAGE_MODEL, PREMIUM_IMAGE_MODEL } from '@/lib/video';
 
 // Let this function run for up to 60 seconds (painting 5 pictures takes ~15–30s).
@@ -73,29 +73,22 @@ export async function POST(req) {
     return json({ error: 'Could not save the dream. Please try again.' }, 500);
   }
 
+  const t0 = Date.now();
+  await logEvent(supabase, user.id, 'dream_generation_started', { typed: !audio || !audio.size });
   try {
     // 6. Ask the AI to split the dream into scenes
     const scenes = await writeScenes(openai, transcript);
 
-    // 7. For every scene, at the same time: paint the picture and record the narration
+    // 7. Paint one picture per scene (all at the same time) and store them.
+    //    The narrated film is made afterwards by /api/dreams/[id]/reel.
     fal.config({ credentials: process.env.FAL_KEY });
     const suffix = STYLES[styleKey].suffix;
     const imageModel = premium ? PREMIUM_IMAGE_MODEL : FREE_IMAGE_MODEL;
     let built = await Promise.all(
       scenes.scenes.map(async (scene, i) => {
-        const [imageUrl, audioUrl] = await Promise.all([
-          paintScene(imageModel, `${scene.image_prompt}, ${suffix}`).then((url) =>
-            storeImage(supabase, user.id, dream.id, i, url)
-          ),
-          narrate(openai, supabase, user.id, dream.id, i, scene.caption),
-        ]);
-        return {
-          caption: scene.caption,
-          image_prompt: scene.image_prompt,
-          motion: scene.motion,
-          image_url: imageUrl,
-          audio_url: audioUrl,
-        };
+        const url = await paintScene(imageModel, `${scene.image_prompt}, ${suffix}`);
+        const imageUrl = await storeImage(supabase, user.id, dream.id, i, url);
+        return { caption: scene.caption, image_prompt: scene.image_prompt, motion: scene.motion, image_url: imageUrl };
       })
     );
 
@@ -113,10 +106,12 @@ export async function POST(req) {
     const { error: updErr } = await supabase.from('dreams').update(update).eq('id', dream.id);
     if (updErr) throw updErr;
 
+    await logEvent(supabase, user.id, 'dream_generation_completed', { ms: Date.now() - t0, scenes: built.length });
     return json({ id: dream.id });
   } catch (e) {
     console.error('dream failed', e);
-    await supabase.from('dreams').update({ status: 'failed', error: String(e?.message || e) }).eq('id', dream.id);
+    await supabase.from('dreams').update({ status: 'failed', error: String(e?.message || e).slice(0, 500) }).eq('id', dream.id);
+    await logEvent(supabase, user.id, 'dream_generation_failed', { ms: Date.now() - t0 });
     return json({ error: 'Something went wrong while painting. Your credit was not wasted — try once more.' }, 500);
   }
 }
@@ -155,17 +150,6 @@ async function paintScene(model, prompt) {
   const url = result?.data?.images?.[0]?.url;
   if (!url) throw new Error('No image returned');
   return url;
-}
-
-/** Reads the caption aloud. Narration is a nice-to-have: failures never break the dream. */
-async function narrate(openai, supabase, userId, dreamId, index, caption) {
-  try {
-    const mp3 = await speak(openai, caption, { voice: NARRATOR_VOICE, style: NARRATOR_STYLE });
-    return await storeBytes(supabase, `${userId}/${dreamId}/n${index}.mp3`, mp3, 'audio/mpeg');
-  } catch (e) {
-    console.error('narration failed', e?.message || e);
-    return null;
-  }
 }
 
 /** Copies the painted image into our own storage so it never expires. */

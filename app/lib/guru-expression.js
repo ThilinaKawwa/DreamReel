@@ -17,3 +17,14 @@ export function expressionFor(text) {
   for (const [name, re] of RULES) if (re.test(t)) return name;
   return 'neutral';
 }
+
+/** Reads the Guru model's JSON reply; an expression outside the fixed list is ignored. */
+export function parseGuruReply(raw) {
+  try {
+    const j = JSON.parse(raw || '{}');
+    const text = typeof j.text === 'string' ? j.text.trim() : '';
+    return { text, expression: EXPRESSIONS.includes(j.expression) ? j.expression : null };
+  } catch {
+    return { text: String(raw || '').trim(), expression: null };
+  }
+}

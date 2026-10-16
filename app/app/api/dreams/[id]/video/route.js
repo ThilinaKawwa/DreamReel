@@ -1,5 +1,6 @@
 import { json, requireUser, getProfile, isPremium } from '@/lib/server';
 import { submitAnimation, collectAnimation } from '@/lib/video';
+import { cinematicReady } from '@/lib/cinema/start';
 
 export const maxDuration = 60;
 export const runtime = 'nodejs';
@@ -26,8 +27,10 @@ export async function GET(req, { params }) {
   return json({ video_status: status, scenes });
 }
 
-/** Premium: bring an older (still-picture) dream to life. */
+/** Premium: bring an older (still-picture) dream to life. Retired once Dream Director is on:
+ *  all paid video then goes through credits and the daily budget. */
 export async function POST(req, { params }) {
+  if (await cinematicReady()) return json({ error: 'Moving films are now made by the Dream Director.' }, 410);
   const auth = await requireUser(req);
   if (!auth) return json({ error: 'Not signed in.' }, 401);
   if (!isPremium(await getProfile(auth.supabase, auth.user.id))) {

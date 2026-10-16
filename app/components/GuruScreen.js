@@ -7,6 +7,7 @@ import { api, startPremium, pickMimeType } from '@/lib/api';
 import { track } from '@/lib/analytics';
 import { GURU_NAME } from '@/lib/guru-public';
 import { expressionFor } from '@/lib/guru-expression';
+import { textToVisemes, visemeAt } from '@/lib/visemes';
 
 const STATUS = {
   idle: 'Tap to talk',
@@ -64,6 +65,8 @@ export default function GuruScreen({ dreamId }) {
   const [err, setErr] = useState('');
 
   const levelRef = useRef(0);
+  const visemeRef = useRef('rest');
+  const speech = useRef(null); // { track, startAt } for approximate viseme sync
   const audioCtx = useRef(null);
   const source = useRef(null);
   const rec = useRef(null);
@@ -114,6 +117,7 @@ export default function GuruScreen({ dreamId }) {
       for (let i = 0; i < buf.length; i++) { const v = (buf[i] - 128) / 128; sum += v * v; }
       const rms = Math.sqrt(sum / buf.length);
       levelRef.current = Math.max(0, Math.min(1, (rms - 0.015) * 5));
+      if (speech.current && audioCtx.current) visemeRef.current = visemeAt(speech.current.track, audioCtx.current.currentTime - speech.current.startAt);
       meter.current = requestAnimationFrame(tick);
     };
     tick();
@@ -124,11 +128,13 @@ export default function GuruScreen({ dreamId }) {
     source.current = null;
     cancelAnimationFrame(meter.current);
     levelRef.current = 0;
+    speech.current = null;
+    visemeRef.current = 'rest';
     if (rec.current?.state === 'recording') { rec.current.onstop = null; rec.current.stop(); }
     rec.current?.stream?.getTracks().forEach((t) => t.stop());
   }
 
-  const play = useCallback(async (bytes, expr) => {
+  const play = useCallback(async (bytes, expr, spokenText) => {
     const ctx = engine();
     const audio = await ctx.decodeAudioData(bytes);
     try { source.current?.stop(); } catch {}
@@ -138,12 +144,18 @@ export default function GuruScreen({ dreamId }) {
     analyser.fftSize = 1024;
     node.connect(analyser);
     analyser.connect(ctx.destination);
-    node.onended = () => { if (source.current === node) { source.current = null; cancelAnimationFrame(meter.current); levelRef.current = 0; setState('idle'); } };
+    node.onended = () => {
+      if (source.current === node) {
+        source.current = null; speech.current = null; visemeRef.current = 'rest';
+        cancelAnimationFrame(meter.current); levelRef.current = 0; setState('idle');
+      }
+    };
     source.current = node;
     if (expr) setExpression(expr);
     setState('speaking');
+    speech.current = { track: textToVisemes(spokenText || '', audio.duration), startAt: ctx.currentTime + 0.02 };
     followLevel(analyser);
-    node.start();
+    node.start(ctx.currentTime + 0.02);
   }, []);
 
   async function ask({ question, audio, voice }) {
@@ -164,7 +176,7 @@ export default function GuruScreen({ dreamId }) {
       setCaption(d.answer);
       if (d.audio) {
         const bin = Uint8Array.from(atob(d.audio), (c) => c.charCodeAt(0));
-        await play(bin.buffer, expr);
+        await play(bin.buffer, expr, d.answer);
       } else {
         setExpression(expr);
         setState('idle');
@@ -208,7 +220,6 @@ export default function GuruScreen({ dreamId }) {
       r.start();
       setState('listening');
       setExpression('curious');
-      track('guru_voice_started');
     } catch {
       setErr(`Allow the microphone to talk with ${GURU_NAME} — or type instead.`);
       setState('error');
@@ -221,7 +232,7 @@ export default function GuruScreen({ dreamId }) {
     setState('thinking');
     try {
       const blob = await api('/api/guru/speak', { json: { dreamId } });
-      await play(await blob.arrayBuffer(), 'warm');
+      await play(await blob.arrayBuffer(), 'warm', reading?.reading || '');
     } catch (e) { setErr(e.message); setState('error'); }
   }
 
@@ -257,7 +268,7 @@ export default function GuruScreen({ dreamId }) {
         <span className="iconbtn" aria-hidden="true" style={{ visibility: 'hidden' }} />
       </div>
 
-      <OrinAvatar state={state} expression={expression} levelRef={levelRef} />
+      <OrinAvatar state={state} expression={expression} levelRef={levelRef} visemeRef={visemeRef} />
 
       <div className="guru-caption" aria-live="polite">
         {caption ? <p>{caption}</p> : <p className="muted">{reading === null && !err ? `${GURU_NAME} is reading your dream…` : ''}</p>}
@@ -270,7 +281,7 @@ export default function GuruScreen({ dreamId }) {
         <button
           className={`mic ${state}`}
           onClick={onMic}
-          disabled={state === 'thinking' || !reading}
+          disabled={state === 'thinking' || (!reading && !err)}
           aria-label={state === 'listening' ? 'Stop and send' : state === 'speaking' ? `Stop ${GURU_NAME}` : `Talk to ${GURU_NAME}`}
           aria-pressed={state === 'listening'}
         >

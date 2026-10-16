@@ -9,8 +9,8 @@ export async function GET(req) {
   if (!auth) return json({ error: 'Not signed in.' }, 401);
   const e = await getEntitlements(auth.supabase, auth.user.id);
   return json({
-    plan: e.plan, canDownload: e.canDownload, shareMode: e.shareMode, canUseGuru: e.canUseGuru,
-    dailyReelLimit: e.dailyReelLimit, reelsLeftToday: e.reelsLeftToday, canGenerateReel: e.canGenerateReel,
+    plan: e.plan, canDownload: e.canDownload, shareMode: e.shareMode, canShareLink: e.canShareLink, canShareFile: e.canShareFile,
+    canUseGuru: e.canUseGuru, cinematicReels: e.cinematicReels, period: e.period, reelsLeft: e.reelsLeft, canGenerateReel: e.canGenerateReel,
     upgradeAvailable: e.upgradeAvailable, renewsAt: e.renewsAt,
   }, 200);
 }

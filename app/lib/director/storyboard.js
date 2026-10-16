@@ -3,7 +3,7 @@
 // idea per shot, every shot pointing at fixed character/location/object IDs.
 // Also writes the narration in the dreamer's own remembering voice.
 
-export const STORYBOARD_PROMPT_VERSION = 'storyboard-2026-10-17';
+export const STORYBOARD_PROMPT_VERSION = 'storyboard-2026-10-16b';
 export const SHOT_SECONDS = 5; // the video model's native clip length
 
 const SHOT_TYPES = ['establishing wide', 'wide', 'medium', 'close-up', 'extreme close-up', 'over-the-shoulder', 'pov', 'insert'];
@@ -14,6 +14,18 @@ export const PURPLE_WORDS = [
   'ethereal', 'celestial', 'majestic', 'majestically', 'tapestry', 'symphony', 'whisper of', 'beckon', 'beckoned', 'transcend',
   'enigmatic', 'otherworldly', 'mesmerizing', 'mesmerising', 'surreal dance', 'cascade of', 'kaleidoscope', 'embrace of',
   'boundless', 'infinite expanse', 'heavens', 'realm', 'tranquil', 'serene', 'luminous', 'gossamer', 'reverie', 'ascended',
+  'ventured', 'torrent', 'unstoppable', 'consumed the', 'engulfed', 'shadowed', 'beneath an', 'veil of', 'tendrils',
+  'cascading', 'shimmering', 'glistening', 'whispered secrets', 'in that moment', 'little did', 'destiny', 'fate itself',
+  'surrendered', 'swallowed the', 'the world around', 'eternity', 'dreamscape', 'otherworld', 'ethereally', 'majesty',
+];
+
+// Phrases that turn a memory into a trailer. Checked as patterns, not single words.
+const TRAILER_PATTERNS = [
+  /\b(as|while) (an?|the) \w+ \w+ (consumed|engulfed|swallowed)/i,
+  /\bthe laws of (nature|physics)\b/i,
+  /\b(i|we) found (myself|ourselves)\b/i,   // classic AI opener
+  /\bsuddenly,? the world\b/i,
+  /\bnothing would ever be the same\b/i,
 ];
 
 export function storyboardSystem(bible, { maxShots }) {
@@ -32,9 +44,12 @@ Narration ("narration") — this is the most important writing rule:
 - It is the dreamer quietly remembering, first person, past tense, plain everyday words, like telling a friend over coffee.
 - Keep their own phrases, their uncertainty ("I think", "it was sort of…") and their reactions ("I remember just staring at it").
 - 5 to 14 words per shot. Some shots may have no narration (empty string) — silence is fine.
-- NEVER: poetic or trailer language, metaphors they didn't use, words like ${PURPLE_WORDS.slice(0, 12).join(', ')}.
+- NEVER: poetic or trailer language, metaphors they didn't use, "I found myself", words like ${PURPLE_WORDS.slice(0, 14).join(', ')}.
+- Do not tidy away their personality: keep "like", "sort of", "I think" where they used them.
   GOOD: "I was standing by the ocean, and then the water just started rising into the sky."
+  GOOD: "I remember walking through the station with my brother. He still had his red jacket on."
   BAD: "Beneath an endless celestial horizon, the ocean ascended majestically toward the heavens."
+  BAD: "My brother and I ventured through the shadowed station as an unstoppable torrent consumed the world around us."
 
 Return JSON only:
 { "title": string (2–5 plain words),
@@ -57,7 +72,9 @@ const str = (v, max = 300) => (typeof v === 'string' ? v.replace(/\s+/g, ' ').tr
 /** True if a narration line sounds machine-written. */
 export function soundsWritten(line) {
   const l = ` ${String(line || '').toLowerCase()} `;
-  return PURPLE_WORDS.some((w) => l.includes(` ${w}`)) || (l.match(/,/g) || []).length > 3;
+  return PURPLE_WORDS.some((w) => l.includes(` ${w}`))
+    || TRAILER_PATTERNS.some((re) => re.test(l))
+    || (l.match(/,/g) || []).length > 3;
 }
 
 /** Plain fallback narration: the dreamer's own cleaned sentences, shortened, spread over the shots. */

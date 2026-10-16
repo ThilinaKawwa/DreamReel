@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { ensureSession, getBrowserSupabase } from '@/lib/supabase';
 import { getName, greeting, stamp } from '@/lib/profile';
-import DreamCard, { loadReels } from '@/components/DreamCard';
+import DreamCard, { loadReels, withCovers } from '@/components/DreamCard';
 import { track, noteVisit } from '@/lib/analytics';
 
 export default function Home() {
@@ -26,6 +26,7 @@ export default function Home() {
         .order('created_at', { ascending: false })
         .limit(6);
       setRecent(data || []);
+      withCovers(data || []).then(setRecent).catch(() => {});
       track('landing_view', { dreams: (data || []).length }, { onceKey: 'landing' });
       noteVisit();
       setReels(await loadReels(getBrowserSupabase(), (data || []).map((d) => d.id)));

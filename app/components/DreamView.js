@@ -36,6 +36,7 @@ export default function DreamView({ dream: shared, id }) {
         const { data: own } = await supabase.from('dreams').select('*').eq('id', id).eq('user_id', uid).maybeSingle();
         if (own && !cancelled) {
           setDream(own);
+          loadPictures(own);
           setIsOwner(true);
           const isNew = new URLSearchParams(window.location.search).has('new');
           if (!isNew) track('dream_reopened', { status: own.status }, { onceKey: `reopen-${id}` });
@@ -45,6 +46,13 @@ export default function DreamView({ dream: shared, id }) {
       if (!cancelled) setChecked(true);
     });
     return () => { cancelled = true; };
+
+    // Private Dream Director pictures: short-lived links from the server (owner only).
+    async function loadPictures(own) {
+      if (!own.scenes?.some((sc) => sc.image_path)) return;
+      const m = await api(`/api/dreams/${id}/media`, { method: 'GET' }).catch(() => null);
+      if (m?.scenes && !cancelled) setDream((d) => ({ ...d, scenes: m.scenes }));
+    }
 
     async function loadAccess(supabase) {
       const upgraded = new URLSearchParams(window.location.search).has('upgraded');
@@ -72,13 +80,22 @@ export default function DreamView({ dream: shared, id }) {
       setMaking(r);
       if (r.dreamReady || r.status === 'completed') {
         const { data: fresh } = await getBrowserSupabase().from('dreams').select('*').eq('id', id).maybeSingle();
-        if (fresh && !stop) setDream(fresh);
+        if (fresh && !stop) {
+          const m = fresh.scenes?.some((sc) => sc.image_path) ? await api(`/api/dreams/${id}/media`, { method: 'GET' }).catch(() => null) : null;
+          setDream(m?.scenes ? { ...fresh, scenes: m.scenes } : fresh);
+        }
       }
     };
     tick();
     const t = setInterval(tick, 3000);
     return () => { stop = true; clearInterval(t); };
   }, [pending, id]);
+
+  async function retryCinematic() {
+    setMaking((m) => ({ ...m, status: 'processing', stage: null }));
+    const r = await api(`/api/dreams/${id}/reel`, { json: { retry: true } }).catch((e) => ({ status: 'failed', error: e.message, canRetry: false, mode: 'cinematic' }));
+    setMaking(r);
+  }
 
   // Secondary sharing: a link. Making a link work is an explicit choice, because dreams are private.
   async function copyLink() {
@@ -125,7 +142,8 @@ export default function DreamView({ dream: shared, id }) {
           {!failed && <span className="orb" aria-hidden="true" />}
           <h2>{failed ? "This one didn't finish" : STAGE_WORDS[making.stage] || 'Understanding your dream…'}</h2>
           <p className="lead">{failed ? making.error : 'Real video takes a few minutes. You can leave this page — it keeps going.'}</p>
-          {failed && <a className="btn primary" href="/create">Tell it again</a>}
+          {failed && making.canRetry && <button className="btn primary" onClick={retryCinematic}>Try again</button>}
+          {failed && !making.canRetry && <a className="btn primary" href="/create">Tell it again</a>}
         </div>
       </main>
     );

@@ -5,9 +5,9 @@ import { STYLES, DEFAULT_STYLE } from '@/lib/styles';
 import { json, requireUser, storeBytes } from '@/lib/server';
 import { logEvent } from '@/lib/analytics-server';
 import { submitAnimation, FREE_IMAGE_MODEL, PREMIUM_IMAGE_MODEL } from '@/lib/video';
-import { getEntitlements } from '@/lib/entitlements';
+import { getEntitlements, claimCredit, refundCredit } from '@/lib/entitlements';
 import { underLimit } from '@/lib/ratelimit';
-import { cinematicReady, createProduction, kickWorker, releaseSlot } from '@/lib/cinema/start';
+import { cinematicReady, createProduction, kickWorker } from '@/lib/cinema/start';
 
 // Let this function run for up to 60 seconds (painting 5 pictures takes ~15–30s).
 export const maxDuration = 60;
@@ -25,18 +25,21 @@ export async function POST(req) {
     return json({ error: 'The app is missing its OPENAI_API_KEY or FAL_KEY. Add them in Vercel → Settings → Environment Variables.' }, 500);
   }
 
-  // 2. What may this person do today? Decided here from the database — never from the browser.
+  // 2. What may this person do? Decided here from trusted data — never from the browser.
   const ent = await getEntitlements(supabase, user.id);
   const premium = ent.plan === 'premium';
-  if (ent.reelsLeftToday === 0) {
+  const cinematic = await cinematicReady();
+  if (cinematic && ent.reelsLeft === 0) {
     return json({
-      error: premium ? "You've made today's Dream Reels. Come back tomorrow." : "You've made today's free Dream Reel. Come back tomorrow — or unlock more with Premium.",
+      error: premium
+        ? "You've used this month's cinematic Dream Reels. They refresh at the start of next month."
+        : "You've used your free Dream Reel. Premium makes more of them.",
       upgrade: !premium && ent.upgradeAvailable, limit: true,
-    }, 429);
+    }, 402);
   }
   if (!(await underLimit(user.id, 'dream'))) return json({ error: 'Too many dreams in a short time. Please wait a little.' }, 429);
-  if (ent.reelsLeftToday === null) {
-    // Quota table not installed yet: keep the older rolling cap.
+  if (!cinematic) {
+    // Cinematic films not configured on this deployment: the older picture flow with its rolling cap.
     const limit = Number(premium ? process.env.PREMIUM_DAILY_LIMIT || 5 : process.env.DAILY_LIMIT || 3);
     const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
     const { count } = await supabase.from('dreams').select('id', { count: 'exact', head: true }).eq('user_id', user.id).gte('created_at', since);
@@ -81,37 +84,33 @@ export async function POST(req) {
     return json({ error: 'Could not save the dream. Please try again.' }, 500);
   }
 
-  // 6. Take today's reel slot atomically (the database does the counting and locking).
-  let quotaId = null;
-  const claim = await supabase.rpc('claim_reel_quota', { p_dream_id: dream.id });
-  if (!claim.error) {
-    if (!claim.data) {
-      await supabase.from('dreams').delete().eq('id', dream.id);
-      return json({ error: premium ? "You've made today's Dream Reels. Come back tomorrow." : "You've made today's free Dream Reel. Come back tomorrow.", upgrade: !premium && ent.upgradeAvailable, limit: true }, 429);
-    }
-    quotaId = claim.data;
-  } else if (!/function .* does not exist|schema cache/i.test(claim.error.message)) {
-    console.error('quota claim failed', claim.error.message);
-    await supabase.from('dreams').delete().eq('id', dream.id);
-    return json({ error: 'Could not start your dream just now. Please try again.' }, 503);
-  }
-
   const t0 = Date.now();
   await logEvent(supabase, user.id, 'dream_generation_started', { typed: !audio || !audio.size });
 
-  // 7. Dream Director: the cinematic pipeline runs in the background and reports real stages.
-  if (quotaId && (await cinematicReady())) {
+  // 6. Dream Director: take this dream's credit atomically (in the database), then start the
+  //    production in THIS deployment's environment. It runs in the background with real stages.
+  if (cinematic) {
+    const claim = await claimCredit(user.id, dream.id, ent);
+    if (!claim.creditId) {
+      await supabase.from('dreams').delete().eq('id', dream.id);
+      if (claim.error) {
+        console.error('credit claim failed', claim.error);
+        return json({ error: 'Could not start your dream just now. Please try again.' }, 503);
+      }
+      return json({ error: premium ? "You've used this month's cinematic Dream Reels." : "You've used your free Dream Reel.", upgrade: !premium && ent.upgradeAvailable, limit: true }, 402);
+    }
     try {
-      await createProduction({ dreamId: dream.id, userId: user.id, tier: ent.generationTier, quotaId });
-      const origin = new URL(req.url).origin;
-      after(() => kickWorker(dream.id, origin));
+      await createProduction({ dreamId: dream.id, userId: user.id, tier: ent.generationTier, creditId: claim.creditId });
+      after(() => kickWorker(dream.id));
       return json({ id: dream.id, mode: 'cinematic' });
     } catch (e) {
       console.error('could not start production', e);
+      await refundCredit(claim.creditId, ent.generationTier);
+      return json({ error: 'Could not start your dream just now. Please try again.' }, 503);
     }
   }
 
-  // Fallback: the original picture renderer (labelled image_fallback on the finished reel).
+  // Not configured for cinematic films: the original picture renderer (labelled image_fallback).
   try {
     // 6. Ask the AI to split the dream into scenes
     const scenes = await writeScenes(openai, transcript);
@@ -149,7 +148,6 @@ export async function POST(req) {
     console.error('dream failed', e);
     await supabase.from('dreams').update({ status: 'failed', error: String(e?.message || e).slice(0, 500) }).eq('id', dream.id);
     await logEvent(supabase, user.id, 'dream_generation_failed', { ms: Date.now() - t0 });
-    await releaseSlot(quotaId);
     return json({ error: 'Something went wrong while painting. Please try once more.' }, 500);
   }
 }

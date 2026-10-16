@@ -1,0 +1,43 @@
+import { json, requireUser, getServiceSupabase } from '@/lib/server';
+
+export const runtime = 'nodejs';
+
+// Internal cost/quality diagnostics. Only for accounts listed in ADMIN_USER_IDS (server env,
+// comma-separated Supabase user ids). Everyone else gets a 404. Never returns dream text.
+function isAdmin(userId) {
+  return String(process.env.ADMIN_USER_IDS || '').split(',').map((s) => s.trim()).filter(Boolean).includes(userId);
+}
+
+export async function GET(req) {
+  const auth = await requireUser(req);
+  if (!auth || !isAdmin(auth.user.id)) return json({ error: 'Not found.' }, 404);
+  const admin = getServiceSupabase();
+  const day = new Date().toISOString().slice(0, 10);
+  const cap = Math.round(Number(process.env.REEL_DAILY_BUDGET_USD || 25) * 100);
+  const [{ data: budget }, { data: rows }] = await Promise.all([
+    admin.from('generation_budget').select('*').eq('day', day).maybeSingle(),
+    admin.from('dream_productions')
+      .select('dream_id, env, tier, status, stage, renderer_type, generation_version, meta, cost, cost_cents, budget_reserved_cents, error, assets, started_at, completed_at')
+      .order('started_at', { ascending: false }).limit(50),
+  ]);
+  const productions = (rows || []).map((r) => ({
+    dream_id: r.dream_id, env: r.env, tier: r.tier, status: r.status, stage: r.stage,
+    renderer_type: r.renderer_type, generation_version: r.generation_version, meta: r.meta,
+    cost_cents: r.cost_cents, cost_breakdown_cents: r.cost, reserved_cents: r.budget_reserved_cents,
+    error: r.error, last_error: r.assets?.lastError || null,
+    shots: Object.entries(r.assets?.clips || {}).map(([id, c]) => ({
+      id, mode: c.mode, provider: c.provider, model: c.model, attempts: c.attempts, status: c.status, error: c.error || null, seconds: c.seconds || null,
+    })),
+    references: Object.fromEntries(Object.entries(r.assets?.references || {}).map(([k, v]) => [k, { ok: Boolean(v.path), attempts: v.attempts }])),
+    started_at: r.started_at, completed_at: r.completed_at,
+  }));
+  return json({
+    budget: {
+      day, cap_cents: cap,
+      spent_cents: budget?.spent_cents || 0, reserved_cents: budget?.reserved_cents || 0,
+      remaining_cents: Math.max(0, cap - (budget?.spent_cents || 0) - (budget?.reserved_cents || 0)),
+      blocked: budget?.blocked || 0,
+    },
+    productions,
+  });
+}

@@ -2,6 +2,7 @@
 
 import { useEffect, useRef } from 'react';
 import { GURU_NAME } from '@/lib/guru-public';
+import { VISEMES } from '@/lib/visemes';
 
 // Orin, brought to life in the browser from his one approved portrait (public/orin.jpg).
 // Everything is drawn on a canvas each frame: breathing, blinking, brows, a small head
@@ -36,7 +37,7 @@ const lerp = (a, b, t) => a + (b - a) * t;
  *   levelRef.current is the live loudness (0–1) of Orin's voice while speaking,
  *   or of the person's voice while listening.
  */
-export default function OrinAvatar({ state, expression = 'neutral', levelRef }) {
+export default function OrinAvatar({ state, expression = 'neutral', levelRef, visemeRef }) {
   const canvasRef = useRef(null);
   const live = useRef({ state, expression });
   live.current = { state, expression };
@@ -49,7 +50,7 @@ export default function OrinAvatar({ state, expression = 'neutral', levelRef }) 
     let raf = 0;
     let skin = 'rgb(150,95,65)';
     const reduced = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
-    const f = { brow: 0, lid: 0.06, tilt: 0, jaw: 0, blink: 0, tintA: 0 };
+    const f = { brow: 0, lid: 0.06, tilt: 0, jaw: 0, width: 1, round: 0, press: 0, tuck: 0, blink: 0, tintA: 0 };
     let nextBlink = performance.now() + 2500;
     let blinkStart = 0;
 
@@ -97,7 +98,14 @@ export default function OrinAvatar({ state, expression = 'neutral', levelRef }) 
       f.brow = lerp(f.brow, thinking ? -1 : look.brow, 0.06);
       f.lid = lerp(f.lid, thinking ? 0.32 : st === 'listening' ? 0 : look.lid, 0.06);
       f.tilt = lerp(f.tilt, st === 'listening' ? 0.02 : look.tilt, 0.04);
-      f.jaw = lerp(f.jaw, st === 'speaking' ? Math.min(1, level * 1.6) : 0, 0.45);
+      // Approximate viseme sync: the shape comes from the text timeline, loudness scales how open it is.
+      const shape = st === 'speaking' ? VISEMES[visemeRef?.current] || VISEMES.rest : VISEMES.rest;
+      const voiced = level > 0.03 ? 0.35 + 0.65 * Math.min(1, level * 2.2) : 0;
+      f.jaw = lerp(f.jaw, shape.open * voiced, 0.5);
+      f.width = lerp(f.width, shape.width, 0.4);
+      f.round = lerp(f.round, shape.round, 0.4);
+      f.press = lerp(f.press, st === 'speaking' && shape.press ? 1 : 0, 0.5);
+      f.tuck = lerp(f.tuck, st === 'speaking' && shape.tuck && level > 0.03 ? 1 : 0, 0.5);
       f.tintA = lerp(f.tintA, look.tint ? 1 : 0, 0.05);
 
       if (now > nextBlink && !blinkStart) blinkStart = now;
@@ -128,19 +136,39 @@ export default function OrinAvatar({ state, expression = 'neutral', levelRef }) 
       // Brows
       if (Math.abs(f.brow) > 0.2) shifted(BROWS, -f.brow);
 
-      // Jaw: a dark mouth opening, with the beard redrawn lower over it.
-      const open = f.jaw * 9;
+      // Mouth: a dark opening shaped by the viseme, with the beard (jaw) redrawn lower over it.
+      const open = f.jaw * 9 * (1 - 0.25 * f.round);
+      const rx = MOUTH.rx * (0.55 + 0.32 * f.width) * (1 - 0.38 * f.round);
       if (open > 0.3) {
         ctx.fillStyle = '#1d0d08';
         ctx.beginPath();
-        ctx.ellipse(MOUTH.x, MOUTH.y + open / 2, MOUTH.rx * (0.75 + f.jaw * 0.2), open / 2 + 1.5, 0, 0, Math.PI * 2);
+        ctx.ellipse(MOUTH.x, MOUTH.y + open / 2, rx, open / 2 + 1.5 + f.round * 1.5, 0, 0, Math.PI * 2);
         ctx.fill();
+        if (f.width > 1.12 && open > 2) {
+          // Teeth just visible on wide/E shapes
+          ctx.fillStyle = 'rgba(232,222,205,0.75)';
+          ctx.fillRect(MOUTH.x - rx * 0.6, MOUTH.y + 0.5, rx * 1.2, Math.min(2.4, open * 0.3));
+        }
         ctx.save();
         ctx.beginPath();
         ctx.rect(0, MOUTH.y + 1, SRC.w, SRC.h);
         ctx.clip();
         shifted(BEARD, open);
         ctx.restore();
+      }
+      if (f.press > 0.2) {
+        // M / B / P: lips pressed together
+        ctx.strokeStyle = `rgba(40,18,10,${0.55 * f.press})`;
+        ctx.lineWidth = 3;
+        ctx.beginPath();
+        ctx.moveTo(MOUTH.x - MOUTH.rx * 0.7, MOUTH.y);
+        ctx.quadraticCurveTo(MOUTH.x, MOUTH.y + 1.5, MOUTH.x + MOUTH.rx * 0.7, MOUTH.y);
+        ctx.stroke();
+      }
+      if (f.tuck > 0.2 && open <= 0.3) {
+        // F / V: lower lip tucked under the teeth
+        ctx.fillStyle = `rgba(232,222,205,${0.5 * f.tuck})`;
+        ctx.fillRect(MOUTH.x - MOUTH.rx * 0.45, MOUTH.y - 1, MOUTH.rx * 0.9, 2);
       }
 
       // Eyelids (expression + blink)
@@ -186,7 +214,7 @@ export default function OrinAvatar({ state, expression = 'neutral', levelRef }) 
     ro.observe(canvas);
     raf = requestAnimationFrame(frame);
     return () => { cancelAnimationFrame(raf); ro.disconnect(); };
-  }, [levelRef]);
+  }, [levelRef, visemeRef]);
 
   return (
     <div className={`orin-stage ${state}`}>

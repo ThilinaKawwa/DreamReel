@@ -16,31 +16,57 @@ Visitors get an instant anonymous account, so there's no sign-up wall.
 
 ## Dream Director (cinematic films, `dream-director-v2`)
 
-New dreams go through the Dream Director when it is switched on (see "Setting up Dream Director" below):
+1. **Understand**: GPT turns the spoken dream into a *DreamBible*. It records characters, places and objects with fixed IDs and locked descriptions, the order of events, and continuity rules. The original words are stored untouched.
+2. **Storyboard**: 3 shots on the free trial, 5 on Premium. Each shot has one motion idea and plain "remembered" narration; over-written lines are replaced with the dreamer's own words.
+3. **Reference pack**: a front view for every on-screen character. Characters in 2 or more shots also get a three-quarter view, made *from* the front view. Places and objects that appear in 2 or more shots get one reference each (`lib/director/routing.js`).
+4. **Keyframes**: each shot's first frame is made *from* those references (`nano-banana/edit`).
+5. **Video, routed per shot**:
+   - Shots with a recurring person or object use **Kling O1 reference-to-video**, which takes the character pack as identity "elements".
+   - Purely scenic shots use **Kling 2.5 Turbo Pro image-to-video**.
+   - Only a failed shot is retried.
+6. **Check and edit**: clips that are broken, black, frozen or too short are rejected. If shots are missing, the person sees *"We couldn't finish the cinematic version of this dream"* with a retry. A slideshow is never shown as if it were the film. Set `REEL_DEBUG_FALLBACK=true` to also save a still-image version privately, for debugging only.
 
-1. **Understand** — GPT turns the spoken dream into a *DreamBible*: characters, places and objects with fixed IDs and locked descriptions, the order of events, and continuity rules. The original words are stored untouched. (`lib/director/bible.js`)
-2. **Storyboard** — 3 shots (free) or 5 (Premium), one motion idea per shot, with plain "remembered" narration. Over-written lines are swapped for the dreamer's own words. (`lib/director/storyboard.js`)
-3. **References** — one reference image per character, place and object (fal `nano-banana`).
-4. **Keyframes** — each shot's first frame is made *from* those reference images (`nano-banana/edit`), which keeps the same person, outfit, place and objects across shots. (`lib/director/compiler.js`)
-5. **Animate** — each keyframe becomes a real 5-second video clip (Kling 2.5 Turbo Pro image-to-video). Only a failed shot is retried, up to 3 tries. (`lib/providers/index.js`)
-6. **Voice, edit, check** — narration, music and captions are cut together. Clips that are broken, black, frozen or too short are rejected. (`lib/cinema/*`)
+All Dream Director media (references, keyframes, clips, narration, final film) goes to the **private** `dream-media` bucket. That bucket has no browser access at all; the server checks ownership and issues short-lived signed links.
 
-If fewer than about 60% of the shots come back as good video, the film is made from the keyframes instead and labelled `image_fallback`. Each film records its `renderer_type` and `generation_version`.
-
-### Setting up Dream Director
-1. Run `supabase/migrations/20261017_dream_director.sql` in Supabase → SQL Editor.
-2. In Vercel, add `SUPABASE_SERVICE_ROLE_KEY` and `REEL_WORKER_SECRET` (any random text of 32+ characters), and check that `NEXT_PUBLIC_SITE_URL` is set. Then redeploy.
-
-### Access (all decided on the server in `lib/entitlements.js`)
-| | Free | Premium |
+### Buckets
+| Bucket | Public? | What's in it |
 |---|---|---|
-| Dream Reels | 1 per day (UK calendar day) | 3 per day |
+| `dream-media` | **Private, server-only** | Everything made by Dream Director. Owners get signed links: 30 min (free) or 2 h (paid) for the film, 1 h for pictures. Shared dream pages get 24 h links to keyframes only. |
+| `dream-videos` | Private, owner-readable | Older picture-renderer films (V1). |
+| `reels` | Public (not listable after the privacy migration) | Older V1 pictures only. Nothing new is written here. |
+
+### Environments
+Each production row records the environment that created it (`production`, `preview` or `development`). The background worker only processes rows from its own environment.
+- **Preview** deployments call their own deployment URL and never a production host.
+- **Local development** runs the work in the same process unless `REEL_WORKER_URL` points at localhost.
+- See `lib/cinema/env.js` and `test/hardening.test.mjs`.
+
+### Access (all decided on the server: `lib/access-config.js` and `lib/entitlements.js`)
+| | Free trial | Premium |
+|---|---|---|
+| Cinematic Dream Reels | **1 in total** (`FREE_TRIAL_REELS`) | **4 per UK calendar month** (`PREMIUM_MONTHLY_REELS`) |
 | Shots per film | 3 | 5 |
-| Download MP4 | No (watch in app only) | Yes |
-| Share | Link to the dream page (`FREE_SHARE_MODE`) | Video file (`PREMIUM_SHARE_MODE`) |
+| Download the MP4 | No (watch in the app) | Yes |
+| Share a link | Yes (`FREE_CAN_SHARE_LINK`) | Yes |
+| Share the file | No (`FREE_CAN_SHARE_FILE`) | Yes |
 | Dream Guru | Locked preview | Yes |
 
-A film that fails gives the day's slot back, at most twice a day.
+Credits are claimed in the database (`reel_credits`). Retrying the same dream never uses a second credit. If no usable film is produced, the credit is given back, at most 2 times for the trial and 3 times per month for Premium. Deleting a dream never gives its credit back.
+
+### Cost safety
+- **Daily budget**: `REEL_DAILY_BUDGET_USD` (default 25) is reserved in the database *before* any money is spent, and the check is safe when several films start at once. Each retry reserves its own share.
+- **Admin view**: accounts listed in `ADMIN_USER_IDS` can open `GET /api/admin/costs`. It shows today's spent, reserved and remaining budget and the number of blocked films, plus per-film cost by part, models used, and per-shot provider and attempts.
+
+### Costs per film (list prices, checked 2026-10-16)
+| Film | Estimated AI cost |
+|---|---|
+| Free, 3 shots (2 with people, 1 scenic) | about $1.75 |
+| Free, 3 scenic shots | about $1.21 |
+| Premium, 5 shots (3 with people) | about $2.78 |
+| Premium, plus one failed-shot retry | about $3.38 |
+| Premium, worst reasonable case | about $5.60 |
+
+The list prices used are Kling 2.5 Turbo Pro $0.07/s, Kling O1 reference $0.112/s, nano-banana $0.04/image, and OpenAI about $0.04 per film. Override them with the `PRICE_*` variables if the providers change their prices.
 
 ## Dream Reel films (shareable video)
 After a dream is painted, its owner's page automatically makes a **film**: a 1080×1920 MP4 (15–35 s) for TikTok, Reels and Shorts.

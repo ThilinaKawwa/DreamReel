@@ -2,7 +2,7 @@ import OpenAI from 'openai';
 import { json, requireUser, getProfile } from '@/lib/server';
 import { logEvent } from '@/lib/analytics-server';
 import { underLimit } from '@/lib/ratelimit';
-import { expressionFor } from '@/lib/guru-expression';
+import { expressionFor, EXPRESSIONS, parseGuruReply as parseReply } from '@/lib/guru-expression';
 import { getEntitlements } from '@/lib/entitlements';
 import {
   GURU_MODEL, GURU_DAILY_MESSAGES, chatSystemPrompt, dreamNotes, memoryNotes, loadMemory,
@@ -34,6 +34,7 @@ export async function POST(req) {
   const wantsAudio = viaVoice || form.get('speak') === '1';
 
   if (!(await underLimit(user.id, 'guruChat'))) return json({ error: 'Let’s pause for a little while — you can ask again soon.' }, 429);
+  if (viaVoice && !(await underLimit(user.id, 'guruVoice'))) return json({ error: 'Let’s pause the voice for a little while — you can still type.' }, 429);
 
   // Fair-use cap per day
   const since = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
@@ -85,18 +86,22 @@ export async function POST(req) {
   ].filter(Boolean).join('\n\n');
 
   let answer;
+  let expression = null;
   try {
     const completion = await openai.chat.completions.create({
       model: GURU_MODEL,
       temperature: 0.8,
-      max_tokens: wantsAudio ? 220 : 420,
+      max_tokens: wantsAudio ? 260 : 460,
+      response_format: { type: 'json_object' },
       messages: [
-        { role: 'system', content: `${chatSystemPrompt(tradition(profile.guru_tradition), { voice: wantsAudio })}\n\n${context}` },
+        { role: 'system', content: `${chatSystemPrompt(tradition(profile.guru_tradition), { voice: wantsAudio })}\n\n${context}\n\n${EXPRESSION_RULE}` },
         ...(history || []).reverse().map((m) => ({ role: m.role, content: m.content })),
         { role: 'user', content: question },
       ],
     });
-    answer = (completion.choices[0].message.content || '').trim();
+    const parsed = parseReply(completion.choices[0].message.content);
+    answer = parsed.text;
+    expression = parsed.expression;
     if (!answer) throw new Error('Empty answer');
   } catch (e) {
     console.error('guru chat failed', e);
@@ -122,5 +127,10 @@ export async function POST(req) {
 
   // Behaviour only — never the question or the answer.
   await logEvent(supabase, user.id, 'guru_response_completed', { voice: viaVoice, spoken: Boolean(audioB64) });
-  return json({ question, answer, messageId: saved?.id || null, audio: audioB64, expression: expressionFor(answer) });
+  if (viaVoice) await logEvent(supabase, user.id, 'guru_voice_started', {});
+  return json({ question, answer, messageId: saved?.id || null, audio: audioB64, expression: expression || expressionFor(answer) });
 }
+
+// The model picks Orin's face for the reply from a fixed list (no extra AI call).
+const EXPRESSION_RULE = `Reply ONLY as JSON: {"text": your reply exactly as you would say it, "expression": one of ${JSON.stringify(EXPRESSIONS)}}.
+Choose the expression that fits the reply's tone. Prefer "warm", "thoughtful" or "curious"; use "concerned" for painful topics; "amused" and "surprised" rarely.`;

@@ -50,10 +50,10 @@ export default function ReelHero({ dream, date, summary, onShareLink }) {
     }
   }, [dream.id]);
 
-  const start = useCallback(async () => {
-    setReel((r) => ({ ...r, status: 'queued', stage: null, error: null }));
+  const start = useCallback(async ({ retry = false } = {}) => {
+    setReel((r) => ({ ...r, status: retry ? 'processing' : 'queued', stage: null, error: null }));
     try {
-      const r = await api(`/api/dreams/${dream.id}/reel`, { json: {} });
+      const r = await api(`/api/dreams/${dream.id}/reel`, { json: retry ? { retry: true } : {} });
       setReel(r);
     } catch (e) {
       setReel({ status: e.status === 503 ? 'unavailable' : 'failed', error: e.message, canRetry: e.status !== 429 });
@@ -193,16 +193,15 @@ export default function ReelHero({ dream, date, summary, onShareLink }) {
             <div className="reel-status failed" role="alert">
               <div>
                 <b>{reel.error || "Your reel didn't finish."}</b>
-                {reel.canRetry !== false && <button className="btn" onClick={start}>Try again</button>}
+                {reel.canRetry !== false && (
+                  <button className="btn" onClick={() => start({ retry: reel.mode === 'cinematic' })}>Try again</button>
+                )}
               </div>
             </div>
           )}
         </div>
       )}
 
-      {done && reel.mode === 'cinematic' && reel.rendererType === 'image_fallback' && (
-        <p className="fine">Video shots weren't available this time, so this film is made from your dream's still frames.</p>
-      )}
       <div className="reel-actions">
         <button className="btn primary" onClick={() => download()} disabled={!done}>
           {done && !reel.canDownload ? '🔒 Download' : '↓ Download'}

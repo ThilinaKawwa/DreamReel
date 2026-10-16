@@ -1,4 +1,5 @@
 import { dreamDate } from '@/lib/profile';
+import { api } from '@/lib/api';
 
 /** "0:27" from seconds */
 export function clock(seconds) {
@@ -51,4 +52,14 @@ export async function loadReels(supabase, ids) {
   const { data, error } = await supabase.from('dream_reels').select('dream_id, status, duration_seconds').in('dream_id', ids);
   if (error || !data) return {};
   return Object.fromEntries(data.map((r) => [r.dream_id, r]));
+}
+
+/** Dream Director pictures are private: ask the server for short-lived cover links. */
+export async function withCovers(dreams) {
+  const ids = dreams.filter((d) => d.scenes?.[0]?.image_path).map((d) => d.id);
+  if (!ids.length) return dreams;
+  try {
+    const { covers } = await api('/api/dreams/covers', { json: { ids } });
+    return dreams.map((d) => (covers[d.id] ? { ...d, scenes: [{ ...d.scenes[0], image_url: covers[d.id] }, ...d.scenes.slice(1)] } : d));
+  } catch { return dreams; }
 }

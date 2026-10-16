@@ -1,39 +1,46 @@
-// Keeps a cinematic production moving between server functions.
-// Each worker run lasts at most ~4½ minutes (Vercel's limit is 5); if the film isn't
-// finished it hands over to a fresh run through a private, secret-protected route.
+// Keeps a cinematic production moving between server functions, inside ONE environment.
+// Each run lasts at most ~4½ minutes (Vercel's limit is 5); unfinished work is handed to a
+// fresh run of THIS deployment's private worker route (see lib/cinema/env.js).
 import { timingSafeEqual } from 'node:crypto';
-import { siteUrl } from '@/lib/brand';
+import { resolveWorkerTarget, deploymentEnv } from '@/lib/cinema/env';
 
 export const WORKER_PATH = '/api/internal/production';
+export { deploymentEnv };
 
 export function workerConfigured() {
   return Boolean(process.env.REEL_WORKER_SECRET && process.env.REEL_WORKER_SECRET.length >= 24);
 }
 
-/** Our own address. Prefer configured values over anything taken from a request. */
-function baseUrl(fallbackOrigin) {
-  if (process.env.REEL_WORKER_URL) return process.env.REEL_WORKER_URL.replace(/\/+$/, '');
-  if (siteUrl()) return siteUrl();
-  if (process.env.VERCEL_PROJECT_PRODUCTION_URL) return `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`;
-  return fallbackOrigin || null;
-}
-
-/** Starts (or continues) the worker for one dream. Returns once the worker has accepted it. */
-export async function kickWorker(dreamId, fallbackOrigin) {
-  const base = baseUrl(fallbackOrigin);
-  if (!base || !workerConfigured()) return false;
+/**
+ * Starts (or continues) the worker for one dream in this environment.
+ * Returns 'sent' | 'inline' | 'unavailable'.
+ */
+export async function kickWorker(dreamId) {
+  if (!workerConfigured()) return 'unavailable';
+  const target = resolveWorkerTarget();
+  if (!target.url) {
+    if (target.env === 'development') {
+      // Local development: run in this process instead of calling any other server.
+      const { runInline } = await import('@/lib/cinema/inline');
+      runInline(dreamId);
+      return 'inline';
+    }
+    console.error('worker not reachable:', target.reason);
+    return 'unavailable';
+  }
   try {
-    const res = await fetch(`${base}${WORKER_PATH}`, {
+    const res = await fetch(`${target.url}${WORKER_PATH}`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json', 'x-worker-secret': process.env.REEL_WORKER_SECRET },
-      body: JSON.stringify({ dreamId }),
+      headers: { 'content-type': 'application/json', 'x-worker-secret': process.env.REEL_WORKER_SECRET, ...target.headers },
+      body: JSON.stringify({ dreamId, env: target.env }),
       signal: AbortSignal.timeout(15_000),
       redirect: 'error',
     });
-    return res.status === 202;
+    if (res.status !== 202) console.error('worker refused', res.status);
+    return res.status === 202 ? 'sent' : 'unavailable';
   } catch (e) {
     console.error('worker kick failed', e?.message || e);
-    return false;
+    return 'unavailable';
   }
 }
 

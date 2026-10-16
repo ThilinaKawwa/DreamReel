@@ -1,46 +1,46 @@
 // CINEMATIC PRODUCTION — the resumable state machine that turns a dream into a film.
 //
-//   understanding → storyboard → references → keyframes → animating → voice → editing → checking → done
+//   budget → understanding → storyboard → references → keyframes → animating → voice → editing → done
 //
-// Every step saves its results in dream_productions.assets, so a timeout, a crash or
-// a failed shot resumes exactly where it stopped: if shot 4 fails, only shot 4 is retried.
-// Runs with the service-role client (server only); ownership comes from the row itself.
+// Every step saves its results in dream_productions, so a timeout, crash or failed shot
+// resumes exactly where it stopped: if shot 4 fails, ONLY shot 4 is retried — the
+// DreamBible, references, keyframes and good clips are never regenerated.
+// All media goes to the PRIVATE `dream-media` bucket. Runs with the service role.
 import OpenAI from 'openai';
-import { mkdtemp, rm, writeFile, readFile } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { DIRECTOR_VERSION, buildDreamBible } from '@/lib/director/bible';
-import { buildStoryboard } from '@/lib/director/storyboard';
-import { referencePrompts, keyframeRequest, videoRequest } from '@/lib/director/compiler';
+import { DIRECTOR_VERSION, BIBLE_PROMPT_VERSION, buildDreamBible } from '@/lib/director/bible';
+import { STORYBOARD_PROMPT_VERSION, buildStoryboard } from '@/lib/director/storyboard';
+import { COMPILER_VERSION, referencePrompt, keyframeRequest, videoRequest } from '@/lib/director/compiler';
+import { referencePlan, routeShot } from '@/lib/director/routing';
 import { imageProvider, videoProvider } from '@/lib/providers';
-import { TIER_PLAN } from '@/lib/entitlements';
+import { accessPlans, refundCredit } from '@/lib/entitlements';
 import { speakLine } from '@/lib/reel/voice';
 import { renderReel } from '@/lib/reel/render';
 import { soundtrackFor, FONTS_DIR } from '@/lib/reel/assets';
 import { BRAND, siteDomain } from '@/lib/brand';
-import { REEL_BUCKET, reelPaths } from '@/lib/reel/pipeline';
 import { checkClip } from '@/lib/cinema/quality';
+import { reservationFor, UNIT } from '@/lib/cinema/costs';
+import { MEDIA_BUCKET, mediaPath, storeFromProvider, storeBytes, readBytes, signedUrl } from '@/lib/cinema/media';
+import { deploymentEnv } from '@/lib/cinema/env';
+import { cinematicVerdict } from '@/lib/cinema/verdict';
 import { logEvent } from '@/lib/analytics-server';
-import { releaseSlot } from '@/lib/cinema/start';
 
-export const MAX_SHOT_ATTEMPTS = 3; // first try + 2 retries, per shot
+export const MAX_SHOT_ATTEMPTS = 3; // first try + 2 automatic retries, per shot
 const MAX_IMAGE_ATTEMPTS = 2;
-const CLIP_TIMEOUT_MS = 12 * 60 * 1000; // a clip that hasn't finished in 12 minutes is retried
-const DAILY_BUDGET_CENTS = Math.round(Number(process.env.REEL_DAILY_BUDGET_USD || 25) * 100);
+const CLIP_TIMEOUT_MS = 12 * 60 * 1000; // a clip unfinished after 12 minutes is retried
+const PROVIDER_LINK_SECONDS = 6 * 3600; // signed links handed to the video model
+export const CINEMATIC_FAILED = "We couldn't finish the cinematic version of this dream.";
+const BUSY = 'Dream Reel is very busy right now. Your credit has been returned — please try again later.';
 
 const now = () => new Date().toISOString();
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const cents = (usd) => Math.round(usd * 1000) / 10; // one decimal of a cent
+const budgetCapCents = () => Math.round(Number(process.env.REEL_DAILY_BUDGET_USD || 25) * 100);
 
 export function cinematicAvailable() {
   return Boolean(process.env.FAL_KEY && process.env.OPENAI_API_KEY && process.env.SUPABASE_SERVICE_ROLE_KEY);
-}
-
-/** Has the platform spent its daily video budget? (Hard cost safeguard.) */
-async function overBudget(admin) {
-  const since = new Date(); since.setUTCHours(0, 0, 0, 0);
-  const { data } = await admin.from('dream_productions').select('cost_cents').gte('started_at', since.toISOString());
-  const spent = (data || []).reduce((n, r) => n + (r.cost_cents || 0), 0);
-  return spent >= DAILY_BUDGET_CENTS;
 }
 
 /**
@@ -48,36 +48,71 @@ async function overBudget(admin) {
  * Returns 'done' | 'waiting' (call again later) | 'locked' (another worker has it).
  */
 export async function advanceProduction(admin, dreamId, deadline) {
-  // One worker at a time: take the lock only if it is free or expired.
-  const lockUntil = new Date(deadline + 30_000).toISOString();
+  // One worker at a time, and only a worker of the environment that created the job.
   const { data: claimed } = await admin.from('dream_productions')
-    .update({ lock_until: lockUntil, updated_at: now() })
-    .eq('dream_id', dreamId).in('status', ['queued', 'processing'])
+    .update({ lock_until: new Date(deadline + 30_000).toISOString(), updated_at: now() })
+    .eq('dream_id', dreamId).eq('env', deploymentEnv()).in('status', ['queued', 'processing'])
     .or(`lock_until.is.null,lock_until.lt.${now()}`)
     .select().maybeSingle();
   if (!claimed) return 'locked';
 
   let p = claimed;
   const save = async (patch) => {
-    p = { ...p, ...patch, updated_at: now() };
+    p = { ...p, ...patch };
     await admin.from('dream_productions').update({ ...patch, updated_at: now() }).eq('dream_id', dreamId);
   };
-  const addCost = (usd) => { p.cost_cents = (p.cost_cents || 0) + Math.round(usd * 100); };
+  const cost = { llm: 0, references: 0, keyframes: 0, video: 0, tts: 0, retries: 0, ...(p.cost || {}) };
+  const addCost = (part, usd) => {
+    cost[part] = Math.round((cost[part] + cents(usd)) * 10) / 10;
+    p.cost_cents = Math.round(Object.values(cost).reduce((a, b) => a + b, 0));
+  };
+  const costPatch = () => ({ cost, cost_cents: p.cost_cents || 0 });
   const timeLeft = () => deadline - Date.now();
+  const plan = accessPlans()[p.tier === 'premium' ? 'premium' : 'free'];
 
   try {
-    const { data: dream } = await admin.from('dreams').select('*').eq('id', dreamId).maybeSingle();
-    if (!dream) throw new Error('dream missing');
+    const { data: dream } = await admin.from('dreams').select('id, user_id, transcript, status, title').eq('id', dreamId).maybeSingle();
+    if (!dream || dream.user_id !== p.user_id) throw new Error('dream missing');
     const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
     const assets = p.assets || {};
     assets.references ||= {}; assets.keyframes ||= {}; assets.clips ||= {}; assets.voice ||= {};
+    const own = (name) => mediaPath(p.user_id, dreamId, name);
+    const images = imageProvider();
+
+    if (!p.meta?.director_model) {
+      await save({
+        meta: {
+          director_model: process.env.DIRECTOR_MODEL || 'gpt-4.1',
+          reference_model: images.model, keyframe_model: images.editModel,
+          identity_video: videoProvider(process.env.IDENTITY_VIDEO_PROVIDER || 'kling-o1-ref').model,
+          scenic_video: videoProvider(process.env.SCENIC_VIDEO_PROVIDER || 'kling-i2v').model,
+          prompt_versions: { bible: BIBLE_PROMPT_VERSION, storyboard: STORYBOARD_PROMPT_VERSION, compiler: COMPILER_VERSION },
+          env: p.env, deployment: process.env.VERCEL_DEPLOYMENT_ID || null,
+        },
+      });
+    }
+
+    // 0. BUDGET — reserve the worst normal cost BEFORE spending anything (concurrency-safe in SQL).
+    if (!p.budget_reserved_cents) {
+      const reserve = Math.ceil(reservationFor(plan.maxShots) * 100);
+      const { data: ok, error } = await admin.rpc('reserve_generation_budget', { p_cents: reserve, p_cap_cents: budgetCapCents() });
+      if (error) throw new Error(`budget: ${error.message}`);
+      if (!ok) {
+        await save({ status: 'failed', stage: null, error: BUSY, lock_until: null });
+        await refundCredit(p.credit_id, p.tier);
+        await logEvent(admin, p.user_id, 'reel_budget_blocked', {});
+        return 'done';
+      }
+      assets.budgetDay = new Date().toISOString().slice(0, 10);
+      await save({ budget_reserved_cents: reserve, assets, status: 'processing' });
+    }
 
     // 1. UNDERSTANDING — the DreamBible
     if (!p.bible) {
       await save({ status: 'processing', stage: 'understanding' });
       const bible = await buildDreamBible(openai, dream.transcript);
-      addCost(0.03);
-      await save({ bible, cost_cents: p.cost_cents });
+      addCost('llm', UNIT.llmDirector / 2 + UNIT.transcribe);
+      await save({ bible, ...costPatch() });
       await logEvent(admin, p.user_id, 'dream_parse_completed', { characters: bible.characters.length, locations: bible.locations.length, objects: bible.objects.length });
     }
     const bible = p.bible;
@@ -85,265 +120,300 @@ export async function advanceProduction(admin, dreamId, deadline) {
     // 2. STORYBOARD
     if (!p.storyboard) {
       await save({ stage: 'storyboard' });
-      const storyboard = await buildStoryboard(openai, bible, { maxShots: TIER_PLAN[p.tier]?.maxShots || 3 });
-      addCost(0.03);
-      await save({ storyboard, cost_cents: p.cost_cents });
+      const storyboard = await buildStoryboard(openai, bible, { maxShots: plan.maxShots });
+      addCost('llm', UNIT.llmDirector / 2);
+      await save({ storyboard, ...costPatch() });
       await admin.from('dreams').update({ title: storyboard.title }).eq('id', dreamId);
       await logEvent(admin, p.user_id, 'storyboard_completed', { shots: storyboard.shots.length, narration_replaced: storyboard.narrationReplaced });
     }
-    const shots = p.storyboard.shots;
-    const images = imageProvider();
+    const storyboard = p.storyboard;
+    const shots = storyboard.shots;
 
-    // 3. REFERENCES — one canonical image per character, place and object (only those used in shots)
-    const used = new Set(shots.flatMap((s) => [`location:${s.locationId}`, ...s.characterIds.map((c) => `character:${c}`), ...s.objectIds.map((o) => `object:${o}`)]));
-    const refJobs = referencePrompts(bible).filter((r) => used.has(r.key) && !assets.references[r.key]?.url && (assets.references[r.key]?.attempts || 0) < MAX_IMAGE_ATTEMPTS);
-    if (refJobs.length) {
+    // 3. REFERENCES — the smallest useful canonical pack (fronts, then three-quarters from the fronts)
+    const refPlan = referencePlan(bible, storyboard);
+    const todo = (r) => !assets.references[r.key]?.path && (assets.references[r.key]?.attempts || 0) < MAX_IMAGE_ATTEMPTS;
+    for (const wave of [refPlan.filter((r) => !r.from), refPlan.filter((r) => r.from)]) {
+      const jobs = wave.filter(todo).filter((r) => !r.from || assets.references[r.from]?.path);
+      if (!jobs.length) continue;
       await save({ stage: 'references' });
-      await Promise.all(refJobs.map(async (r) => {
+      await Promise.all(jobs.map(async (r) => {
         const prev = assets.references[r.key] || { attempts: 0 };
         try {
-          const out = await images.generate({ prompt: r.prompt, aspect: r.kind === 'location' ? '9:16' : '3:4' });
-          addCost(out.cost);
-          assets.references[r.key] = { url: out.url, model: out.model, attempts: prev.attempts + 1 };
-          if (r.kind === 'character') await logEvent(admin, p.user_id, 'character_reference_generated', {});
+          const prompt = referencePrompt(bible, r);
+          const out = r.from
+            ? await images.edit({ prompt, imageUrls: [await signedUrl(admin, assets.references[r.from].path, PROVIDER_LINK_SECONDS)], aspect: '3:4' })
+            : await images.generate({ prompt, aspect: r.kind === 'location' ? '9:16' : '3:4' });
+          addCost(prev.attempts ? 'retries' : 'references', out.cost);
+          const stored = await storeFromProvider(admin, own(`ref-${r.key}.jpg`), out.url, 'image/', 20e6);
+          assets.references[r.key] = { path: stored.path, model: out.model, view: r.view, attempts: prev.attempts + 1 };
+          if (r.kind === 'character' && r.view === 'front') await logEvent(admin, p.user_id, 'character_reference_generated', {});
         } catch (e) {
           assets.references[r.key] = { ...prev, attempts: prev.attempts + 1, error: String(e.message).slice(0, 160) };
         }
       }));
-      await save({ assets, cost_cents: p.cost_cents });
+      await save({ assets, ...costPatch() });
     }
+    const available = new Set(Object.entries(assets.references).filter(([, v]) => v.path).map(([k]) => k));
 
-    // 4. KEYFRAMES — each shot's first frame, generated FROM the reference images
-    const kfJobs = shots.filter((s) => !assets.keyframes[s.id]?.url && (assets.keyframes[s.id]?.attempts || 0) < MAX_IMAGE_ATTEMPTS);
+    // 4. KEYFRAMES — each shot's first frame, generated FROM the references that exist
+    const kfJobs = shots.filter((s) => !assets.keyframes[s.id]?.path && (assets.keyframes[s.id]?.attempts || 0) < MAX_IMAGE_ATTEMPTS);
     if (kfJobs.length) {
       await save({ stage: 'keyframes' });
       await Promise.all(kfJobs.map(async (shot) => {
         const prev = assets.keyframes[shot.id] || { attempts: 0 };
-        const req = keyframeRequest(bible, shot);
-        const refUrls = req.refs.map((k) => assets.references[k]?.url).filter(Boolean);
+        const req = keyframeRequest(bible, shot, available);
         try {
-          const out = refUrls.length
-            ? await images.edit({ prompt: req.prompt, imageUrls: refUrls })
-            : await images.generate({ prompt: req.prompt });
-          addCost(out.cost);
-          assets.keyframes[shot.id] = { url: out.url, model: out.model, refs: req.refs.filter((k) => assets.references[k]?.url), attempts: prev.attempts + 1 };
+          const refUrls = (await Promise.all(req.refs.map((k) => signedUrl(admin, assets.references[k].path, PROVIDER_LINK_SECONDS)))).filter(Boolean);
+          const out = refUrls.length ? await images.edit({ prompt: req.prompt, imageUrls: refUrls }) : await images.generate({ prompt: req.prompt });
+          addCost(prev.attempts ? 'retries' : 'keyframes', out.cost);
+          const stored = await storeFromProvider(admin, own(`kf-${shot.id}.jpg`), out.url, 'image/', 20e6);
+          assets.keyframes[shot.id] = { path: stored.path, model: out.model, refs: req.refs, attempts: prev.attempts + 1 };
         } catch (e) {
           assets.keyframes[shot.id] = { ...prev, attempts: prev.attempts + 1, error: String(e.message).slice(0, 160) };
         }
       }));
-      await save({ assets, cost_cents: p.cost_cents });
+      await save({ assets, ...costPatch() });
     }
-    const framed = shots.filter((s) => assets.keyframes[s.id]?.url);
-    if (!framed.length) throw new Error('no keyframes could be made');
+    const framed = shots.filter((s) => assets.keyframes[s.id]?.path);
+    if (framed.length < Math.min(2, shots.length)) throw new Error('not enough keyframes');
 
-    // Keep the keyframes as the dream's pictures (gallery covers, shared page, fallback film).
-    if (dream.status !== 'ready' || !dream.scenes?.length) {
-      const scenes = [];
-      for (const s of framed) {
-        const stored = await storePublicImage(admin, p.user_id, dreamId, s.id, assets.keyframes[s.id].url).catch(() => assets.keyframes[s.id].url);
-        scenes.push({ caption: s.narration || s.action, image_url: stored, shot_id: s.id, image_prompt: s.visual });
-      }
-      await admin.from('dreams').update({ scenes, status: 'ready', title: p.storyboard.title }).eq('id', dreamId);
+    // The dream's pictures are PRIVATE paths; owners get short-lived signed links from the server.
+    if (dream.status !== 'ready') {
+      const scenes = framed.map((s) => ({ caption: s.narration || '', shot_id: s.id, image_path: assets.keyframes[s.id].path }));
+      await admin.from('dreams').update({ scenes, status: 'ready', title: storyboard.title }).eq('id', dreamId);
     }
 
-    // 5. ANIMATING — real video clips from the keyframes (skipped when the daily budget is spent)
-    let useVideo = !assets.videoSkipped;
-    if (useVideo && !Object.keys(assets.clips).length && await overBudget(admin)) {
-      assets.videoSkipped = 'daily budget reached';
-      useVideo = false;
-      await save({ assets });
-    }
-    if (useVideo) {
-      await save({ stage: 'animating' });
-      const video = videoProvider(p.tier === 'premium' ? process.env.PREMIUM_VIDEO_PROVIDER : process.env.VIDEO_PROVIDER);
-      while (true) {
-        let pending = 0;
-        for (const shot of framed) {
-          const c = assets.clips[shot.id] || { attempts: 0 };
-          if (c.status === 'done' || (c.status === 'failed' && c.attempts >= MAX_SHOT_ATTEMPTS)) continue;
-          const timedOut = c.status === 'pending' && Date.now() - new Date(c.submittedAt).getTime() > CLIP_TIMEOUT_MS;
-          if (!c.requestId || c.status === 'failed' || timedOut) {
-            if (c.attempts >= MAX_SHOT_ATTEMPTS) { assets.clips[shot.id] = { ...c, status: 'failed' }; continue; }
-            const vr = videoRequest(bible, shot);
-            try {
-              const { requestId } = await video.submit({
-                startImageUrl: assets.keyframes[shot.id].url,
-                prompt: vr.prompt, negative: vr.negative, duration: vr.duration,
-                elementImages: vr.elements.map((k) => assets.references[k]?.url).filter(Boolean),
-              });
-              addCost(video.costPerSecond * vr.duration);
-              assets.clips[shot.id] = { requestId, provider: video.id, model: video.model, attempts: c.attempts + 1, status: 'pending', submittedAt: now() };
-              await logEvent(admin, p.user_id, 'video_clip_started', { attempt: c.attempts + 1 });
-            } catch (e) {
-              assets.clips[shot.id] = { ...c, attempts: c.attempts + 1, status: 'failed', error: String(e.message).slice(0, 160) };
-            }
-            pending++;
-            continue;
-          }
-          const st = await video.check(c.requestId);
-          if (st.status === 'done') {
-            assets.clips[shot.id] = { ...c, status: 'done', url: st.url, doneAt: now() };
-            await logEvent(admin, p.user_id, 'video_clip_completed', { attempt: c.attempts });
-          } else if (st.status === 'failed') {
-            assets.clips[shot.id] = { ...c, status: 'failed', error: st.error };
-            await logEvent(admin, p.user_id, 'video_clip_failed', { attempt: c.attempts });
-            if (c.attempts < MAX_SHOT_ATTEMPTS) pending++;
-          } else pending++;
+    // 5. ANIMATING — real video per shot; identity shots use the reference-conditioned model
+    await save({ stage: 'animating' });
+    while (true) {
+      let pending = 0;
+      for (const shot of framed) {
+        const c = assets.clips[shot.id] || { attempts: 0, extraAttempts: 0 };
+        const maxAttempts = MAX_SHOT_ATTEMPTS + (c.extraAttempts || 0);
+        if (c.status === 'done' || (c.status === 'failed' && c.attempts >= maxAttempts)) continue;
+        const timedOut = c.status === 'pending' && Date.now() - new Date(c.submittedAt).getTime() > CLIP_TIMEOUT_MS;
+        if (!c.requestId || c.status === 'failed' || timedOut) {
+          if (c.attempts >= maxAttempts) { assets.clips[shot.id] = { ...c, status: 'failed' }; continue; }
+          const sub = await submitShot(admin, { p, bible, storyboard, shot, assets, own, retry: c.attempts > 0 });
+          if (sub.cost) addCost(c.attempts > 0 ? 'retries' : 'video', sub.cost);
+          assets.clips[shot.id] = { ...c, ...sub.record, attempts: c.attempts + 1 };
+          if (sub.record.status === 'pending') await logEvent(admin, p.user_id, 'video_clip_started', { attempt: c.attempts + 1, mode: sub.record.mode });
+          if (sub.record.status !== 'failed' || c.attempts + 1 < maxAttempts) pending++;
+          continue;
         }
-        await save({ assets, cost_cents: p.cost_cents });
-        if (!pending) break;
-        if (timeLeft() < 25_000) return 'waiting';
-        await sleep(8000);
+        const st = await videoProvider(c.provider).check(c.requestId);
+        if (st.status === 'done') {
+          const verdict = await keepClip(admin, st.url, own(`clip-${shot.id}.mp4`));
+          if (verdict.ok) {
+            assets.clips[shot.id] = { ...c, status: 'done', path: verdict.path, seconds: verdict.seconds, doneAt: now(), error: null };
+            await logEvent(admin, p.user_id, 'video_clip_completed', { attempt: c.attempts, mode: c.mode });
+          } else {
+            assets.clips[shot.id] = { ...c, status: 'failed', error: `quality: ${verdict.reason}` };
+            await logEvent(admin, p.user_id, 'video_clip_failed', { attempt: c.attempts, mode: c.mode, quality: true });
+            if (c.attempts < maxAttempts) pending++;
+          }
+        } else if (st.status === 'failed') {
+          assets.clips[shot.id] = { ...c, status: 'failed', error: st.error };
+          await logEvent(admin, p.user_id, 'video_clip_failed', { attempt: c.attempts, mode: c.mode });
+          if (c.attempts < maxAttempts) pending++;
+        } else pending++;
       }
+      await save({ assets, ...costPatch() });
+      if (!pending) break;
+      if (timeLeft() < 25_000) return 'waiting';
+      await sleep(8000);
+    }
+
+    const good = framed.filter((s) => assets.clips[s.id]?.status === 'done');
+    const verdict = cinematicVerdict(framed.length, good.length);
+    if (verdict === 'failed') {
+      // Do NOT hand the user a slideshow as if it were the film. Optionally keep a debug fallback.
+      let renderer = null;
+      if (process.env.REEL_DEBUG_FALLBACK === 'true' && timeLeft() > 150_000) {
+        await editFilm(admin, p, framed, assets, { stillsOnly: true, name: 'debug-fallback' }).catch((e) => console.error('debug fallback failed', e));
+        renderer = 'image_fallback';
+      }
+      await finish(admin, p, save, assets, { status: 'failed', renderer_type: renderer, error: CINEMATIC_FAILED });
+      await refundCredit(p.credit_id, p.tier);
+      await logEvent(admin, p.user_id, 'cinematic_failed', { shots: framed.length, good: good.length });
+      return 'done';
     }
 
     // 6. VOICE — the dreamer's remembered narration, one short line per shot
-    const lines = framed.map((s) => s.narration || '');
-    const missingVoice = framed.filter((s, i) => lines[i] && !assets.voice[s.id] && !(assets.voiceFailed || []).includes(s.id));
+    const missingVoice = good.filter((s) => s.narration && !assets.voice[s.id] && !(assets.voiceFailed || []).includes(s.id));
     if (missingVoice.length) {
       await save({ stage: 'voice' });
       const failed = assets.voiceFailed || [];
       await Promise.all(missingVoice.map(async (s) => {
         const spoken = await speakLine(openai, s.narration);
         if (!spoken) { failed.push(s.id); return; }
-        const p2 = `${p.user_id}/${dreamId}/voice-${s.id}.wav`;
-        const { error } = await admin.storage.from(REEL_BUCKET).upload(p2, spoken.wav, { contentType: 'audio/wav', upsert: true });
-        if (error) { failed.push(s.id); return; }
-        assets.voice[s.id] = { path: p2, seconds: spoken.seconds };
-        addCost(0.002);
+        try {
+          const vp = await storeBytes(admin, own(`voice-${s.id}.wav`), spoken.wav, 'audio/wav');
+          assets.voice[s.id] = { path: vp, seconds: spoken.seconds };
+          addCost('tts', UNIT.ttsPerLine);
+        } catch { failed.push(s.id); }
       }));
       assets.voiceFailed = failed;
-      await save({ assets, cost_cents: p.cost_cents });
+      await save({ assets, ...costPatch() });
     }
     if (timeLeft() < 150_000) return 'waiting'; // editing needs a clear run
 
-    // 7. EDITING (+ 8. CHECKING) — assemble the film, check every clip first
+    // 7. EDITING — assemble the film from the checked clips
     await save({ stage: 'editing' });
-    const result = await editFilm(admin, p, framed, assets);
-    if (!result) throw new Error('editing produced nothing');
-
-    const paths = reelPaths(p.user_id, dreamId);
+    const result = await editFilm(admin, p, good, assets, { name: 'reel' });
     const done = now();
     await admin.from('dream_reels').upsert({
       dream_id: dreamId, user_id: p.user_id, status: 'completed', stage: null,
       narration: { lines: result.lines, mood: bible.mood, source: 'director', voiced: result.voiced },
-      soundtrack: result.soundtrack, video_path: paths.video, poster_path: paths.poster,
+      soundtrack: result.soundtrack, video_path: result.videoPath, poster_path: result.posterPath,
       duration_seconds: Math.round(result.seconds * 10) / 10, size_bytes: result.bytes, width: 1080, height: 1920,
       error: null, attempts: 1, started_at: p.started_at, completed_at: done, updated_at: done,
-      renderer_type: result.renderer, generation_version: p.generation_version,
+      renderer_type: 'cinematic_video', generation_version: p.generation_version,
     }, { onConflict: 'dream_id' });
-    await save({ status: 'completed', stage: null, renderer_type: result.renderer, completed_at: done, lock_until: null, assets, cost_cents: p.cost_cents, error: null });
-    await logEvent(admin, p.user_id, 'reel_completed', { renderer: result.renderer, shots: result.shotCount, seconds: Math.round(result.seconds), cost_cents: p.cost_cents });
+    await finish(admin, p, save, assets, { status: 'completed', renderer_type: 'cinematic_video', completed_at: done, error: null }, costPatch());
+    await logEvent(admin, p.user_id, 'reel_completed', { renderer: 'cinematic_video', shots: good.length, seconds: Math.round(result.seconds), cost_cents: p.cost_cents });
     return 'done';
   } catch (e) {
-    console.error('production failed', dreamId, e);
-    const attempts = (p.assets?.runFailures || 0) + 1;
-    const assets = { ...(p.assets || {}), runFailures: attempts, lastError: String(e.message).slice(0, 200) };
-    if (attempts >= 3) {
-      await save({ status: 'failed', stage: null, error: 'We couldn\'t finish this film. Please try again later.', assets, lock_until: null });
-      await releaseQuota(admin, p);
-      await logEvent(admin, p.user_id, 'reel_render_failed', { stage: p.stage || 'unknown' });
+    console.error('production failed', dreamId, e?.message || e);
+    const assets = { ...(p.assets || {}), runFailures: (p.assets?.runFailures || 0) + 1, lastError: String(e.message).slice(0, 200) };
+    if (assets.runFailures >= 3) {
+      await finish(admin, p, save, assets, { status: 'failed', error: CINEMATIC_FAILED }, costPatch());
+      await refundCredit(p.credit_id, p.tier);
+      await logEvent(admin, p.user_id, 'cinematic_failed', { stage: p.stage || 'unknown' });
       return 'done';
     }
-    await save({ assets, lock_until: null });
+    await save({ assets, ...costPatch(), lock_until: null });
     return 'waiting';
   } finally {
-    // Hand the production back so the next worker (or a page poll) can pick it up at once.
+    // Hand the job back so the next run (or a page poll) can pick it up at once.
     await admin.from('dream_productions').update({ lock_until: null }).eq('dream_id', dreamId).then(() => {}, () => {});
   }
 }
 
-/** Downloads clips/keyframes/voice, checks them, renders the film and uploads it. */
-async function editFilm(admin, p, shots, assets) {
+/** Terminal state: releases the budget reservation and records actual spend. */
+async function finish(admin, p, save, assets, patch, extra = {}) {
+  const day = assets.budgetDay;
+  if (day && p.budget_reserved_cents) {
+    const spent = Math.max(0, (p.cost_cents || 0) - (assets.budgetSettledCents || 0));
+    await admin.rpc('settle_generation_budget', { p_day: day, p_reserved_cents: p.budget_reserved_cents, p_spent_cents: spent });
+    assets.budgetSettledCents = p.cost_cents || 0;
+  }
+  await save({ ...patch, ...extra, stage: null, assets, budget_reserved_cents: 0, lock_until: null });
+}
+
+/** Submits one shot to the right video model. Retries reserve their own budget first. */
+async function submitShot(admin, { p, bible, storyboard, shot, assets, own, retry }) {
+  const route = routeShot(storyboard, shot);
+  const vr = videoRequest(bible, shot);
+  // Identity shots need their canonical references; if those failed, use the scenic mode.
+  const elements = route.identityKeys.filter((k) => assets.references[k]?.path);
+  const mode = route.mode === 'identity' && elements.length ? 'identity' : 'scenic';
+  const video = videoProvider(mode === 'identity' ? route.provider : (process.env.SCENIC_VIDEO_PROVIDER || 'kling-i2v'));
+  const shotCost = video.costPerSecond * vr.duration;
+  if (retry) {
+    const { data: ok } = await admin.rpc('reserve_generation_budget', { p_cents: Math.ceil(shotCost * 100), p_cap_cents: budgetCapCents() });
+    if (!ok) return { record: { status: 'failed', error: 'daily budget reached', mode, provider: video.id, model: video.model } };
+    p.budget_reserved_cents = (p.budget_reserved_cents || 0) + Math.ceil(shotCost * 100);
+    await admin.from('dream_productions').update({ budget_reserved_cents: p.budget_reserved_cents }).eq('dream_id', p.dream_id);
+  }
+  try {
+    const startImageUrl = await signedUrl(admin, assets.keyframes[shot.id].path, PROVIDER_LINK_SECONDS);
+    const els = mode === 'identity' ? await Promise.all(elements.map(async (k) => {
+      const frontal = await signedUrl(admin, assets.references[k].path, PROVIDER_LINK_SECONDS);
+      const tq = assets.references[`${k}:three_quarter`]?.path;
+      const extra = tq ? await signedUrl(admin, tq, PROVIDER_LINK_SECONDS) : null;
+      return { label: vr.labels?.[k] || k.split(':')[1], frontal, references: [extra || frontal] };
+    })) : [];
+    const { requestId } = await video.submit({ startImageUrl, prompt: vr.prompt, negative: vr.negative, duration: vr.duration, elements: els });
+    return { cost: shotCost, record: { status: 'pending', requestId, mode, provider: video.id, model: video.model, submittedAt: now(), error: null } };
+  } catch (e) {
+    return { record: { status: 'failed', error: String(e.message).slice(0, 160), mode, provider: video.id, model: video.model } };
+  }
+}
+
+/** Downloads a finished clip into private storage and checks it before accepting it. */
+async function keepClip(admin, url, storePath) {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'clip-'));
+  try {
+    const stored = await storeFromProvider(admin, storePath, url, 'video/', 80e6);
+    const file = path.join(dir, 'clip.mp4');
+    await writeFile(file, stored.bytes);
+    const q = await checkClip(file);
+    return q.ok ? { ok: true, path: storePath, seconds: q.seconds } : { ok: false, reason: q.reason };
+  } catch (e) {
+    return { ok: false, reason: String(e.message).slice(0, 120) };
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+/** Renders the film from private media and uploads it privately. */
+async function editFilm(admin, p, shots, assets, { stillsOnly = false, name }) {
   const workDir = await mkdtemp(path.join(os.tmpdir(), 'film-'));
-  await admin.from('dream_productions').update({ stage: 'checking', updated_at: now() }).eq('dream_id', p.dream_id);
   try {
     const scenes = [];
     const voices = [];
-    const keptLines = [];
-    let clipsUsed = 0;
+    const lines = [];
     for (const s of shots) {
       const image = path.join(workDir, `${s.id}.jpg`);
-      await fetchTo(assets.keyframes[s.id].url, image, 'image/', 20e6);
+      await writeFile(image, await readBytes(admin, assets.keyframes[s.id].path));
       let clip = null;
       let clipSeconds = null;
       const c = assets.clips[s.id];
-      if (c?.status === 'done' && c.url) {
-        const file = path.join(workDir, `${s.id}.mp4`);
-        try {
-          await fetchTo(c.url, file, 'video/', 80e6);
-          const ok = await checkClip(file);
-          if (ok.ok) { clip = file; clipSeconds = ok.seconds; clipsUsed++; } else assets.clips[s.id] = { ...c, status: 'rejected', error: ok.reason };
-        } catch (e) { assets.clips[s.id] = { ...c, status: 'rejected', error: String(e.message).slice(0, 120) }; }
+      if (!stillsOnly && c?.status === 'done' && c.path) {
+        clip = path.join(workDir, `${s.id}.mp4`);
+        await writeFile(clip, await readBytes(admin, c.path));
+        clipSeconds = c.seconds;
       }
       let voice = null;
       if (assets.voice[s.id]) {
-        const { data } = await admin.storage.from(REEL_BUCKET).download(assets.voice[s.id].path);
-        if (data) {
-          const vf = path.join(workDir, `${s.id}.wav`);
-          await writeFile(vf, Buffer.from(await data.arrayBuffer()));
-          voice = { file: vf, seconds: assets.voice[s.id].seconds };
-        }
+        const vf = path.join(workDir, `${s.id}.wav`);
+        await writeFile(vf, await readBytes(admin, assets.voice[s.id].path));
+        voice = { file: vf, seconds: assets.voice[s.id].seconds };
       }
       scenes.push({ image, clip, clipSeconds });
       voices.push(voice);
-      keptLines.push(s.narration || '');
+      lines.push(s.narration || '');
     }
-
-    // Cinematic only if most shots really moved; otherwise label it honestly as the fallback.
-    const renderer = clipsUsed >= Math.max(2, Math.ceil(shots.length * 0.6)) ? 'cinematic_video' : 'image_fallback';
-    if (renderer === 'image_fallback') scenes.forEach((s) => { s.clip = null; });
-    await admin.from('dream_productions').update({ stage: 'editing', assets, updated_at: now() }).eq('dream_id', p.dream_id);
-
     const soundtrack = soundtrackFor(p.bible.mood);
     const out = await renderReel({
-      workDir, scenes, voices, lines: keptLines, music: soundtrack?.file || null, fontsDir: FONTS_DIR,
+      workDir, scenes, voices, lines, music: soundtrack?.file || null, fontsDir: FONTS_DIR,
       brand: { footer: BRAND.footer, title: BRAND.name, tagline: BRAND.tagline, domain: siteDomain() },
     });
-    const paths = reelPaths(p.user_id, p.dream_id);
-    const up = await admin.storage.from(REEL_BUCKET).upload(paths.video, await readFile(out.video), { contentType: 'video/mp4', upsert: true });
-    if (up.error) throw new Error(`storage upload failed: ${up.error.message}`);
-    await admin.storage.from(REEL_BUCKET).upload(paths.poster, await readFile(out.poster), { contentType: 'image/jpeg', upsert: true });
+    const { readFile } = await import('node:fs/promises');
+    const videoPath = mediaPath(p.user_id, p.dream_id, `${name}.mp4`);
+    const posterPath = mediaPath(p.user_id, p.dream_id, `${name}-poster.jpg`);
+    await storeBytes(admin, videoPath, await readFile(out.video), 'video/mp4');
+    await storeBytes(admin, posterPath, await readFile(out.poster), 'image/jpeg');
     return {
-      renderer, seconds: out.seconds, bytes: out.bytes, soundtrack: soundtrack?.id || null, shotCount: shots.length,
-      lines: keptLines, voiced: voices.map((v) => (v ? v.seconds : null)),
+      seconds: out.seconds, bytes: out.bytes, soundtrack: soundtrack?.id || null, videoPath, posterPath,
+      lines, voiced: voices.map((v) => (v ? v.seconds : null)),
     };
   } finally {
     await rm(workDir, { recursive: true, force: true }).catch(() => {});
   }
 }
 
-// Only fetch media from fal's CDN or our own storage.
-function allowedUrl(u) {
-  try {
-    const url = new URL(u);
-    return url.protocol === 'https:' && (/(^|\.)fal\.media$/.test(url.host) || url.host === 'storage.googleapis.com' || url.host.endsWith('.supabase.co'));
-  } catch { return false; }
-}
-async function fetchTo(url, file, typePrefix, maxBytes) {
-  if (!allowedUrl(url)) throw new Error('unexpected media address');
-  const res = await fetch(url, { redirect: 'error' });
-  if (!res.ok) throw new Error(`download ${res.status}`);
-  const type = res.headers.get('content-type') || '';
-  if (!type.startsWith(typePrefix) && type !== 'application/octet-stream') throw new Error(`unexpected type ${type}`);
-  const buf = Buffer.from(await res.arrayBuffer());
-  if (buf.length > maxBytes) throw new Error('file too large');
-  await writeFile(file, buf);
-}
-
-async function storePublicImage(admin, userId, dreamId, shotId, url) {
-  if (!allowedUrl(url)) return url;
-  const res = await fetch(url, { redirect: 'error' });
-  if (!res.ok) return url;
-  const bytes = Buffer.from(await res.arrayBuffer());
-  const p = `${userId}/${dreamId}/${shotId}.jpg`;
-  const { error } = await admin.storage.from('reels').upload(p, bytes, { contentType: res.headers.get('content-type') || 'image/jpeg', upsert: true });
-  return error ? url : admin.storage.from('reels').getPublicUrl(p).data.publicUrl;
+/**
+ * A person's retry of a failed cinematic production: only failed shots get fresh attempts;
+ * the DreamBible, references, keyframes and good clips are kept. Returns false if not allowed.
+ */
+export async function requeueProduction(admin, prod, maxUserRetries = 1) {
+  const assets = { ...(prod.assets || {}) };
+  if ((assets.userRetries || 0) >= maxUserRetries) return false;
+  assets.userRetries = (assets.userRetries || 0) + 1;
+  assets.runFailures = 0;
+  delete assets.budgetDay;
+  for (const [id, c] of Object.entries(assets.clips || {})) {
+    if (c.status !== 'done') assets.clips[id] = { ...c, status: 'failed', extraAttempts: (c.extraAttempts || 0) + 2 };
+  }
+  for (const kind of ['references', 'keyframes']) {
+    for (const [k, v] of Object.entries(assets[kind] || {})) if (!v.path) assets[kind][k] = { ...v, attempts: 0 };
+  }
+  const { error } = await admin.from('dream_productions')
+    .update({ status: 'queued', stage: null, error: null, renderer_type: null, assets, budget_reserved_cents: 0, lock_until: null, updated_at: now() })
+    .eq('dream_id', prod.dream_id).eq('status', 'failed');
+  return !error;
 }
 
-/** A failed reel gives the day's slot back (at most twice a day, so retry-spam can't be abused). */
-async function releaseQuota(admin, p) {
-  await releaseSlot(p.quota_id);
-}
-
-export { DIRECTOR_VERSION };
+export { DIRECTOR_VERSION, MEDIA_BUCKET, cinematicVerdict };

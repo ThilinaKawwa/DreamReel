@@ -1,4 +1,5 @@
 import { json, requireUser, getServiceSupabase } from '@/lib/server';
+import { MEDIA_BUCKET } from '@/lib/cinema/media';
 
 export const runtime = 'nodejs';
 
@@ -17,10 +18,17 @@ export async function GET(req) {
   const [{ data: budget }, { data: rows }] = await Promise.all([
     admin.from('generation_budget').select('*').eq('day', day).maybeSingle(),
     admin.from('dream_productions')
-      .select('dream_id, env, tier, status, stage, renderer_type, generation_version, meta, cost, cost_cents, budget_reserved_cents, error, assets, started_at, completed_at')
+      .select('dream_id, user_id, env, tier, status, stage, renderer_type, generation_version, meta, cost, cost_cents, budget_reserved_cents, error, assets, started_at, completed_at')
       .order('started_at', { ascending: false }).limit(50),
   ]);
+  // Admin-only 1-hour links to finished test reels, for quality review.
+  const links = {};
+  await Promise.all((rows || []).filter((r) => r.status === 'completed').slice(0, 20).map(async (r) => {
+    const { data } = await admin.storage.from(MEDIA_BUCKET).createSignedUrl(`${r.user_id}/${r.dream_id}/reel.mp4`, 3600);
+    if (data?.signedUrl) links[r.dream_id] = data.signedUrl;
+  }));
   const productions = (rows || []).map((r) => ({
+    review_url: links[r.dream_id] || null,
     dream_id: r.dream_id, env: r.env, tier: r.tier, status: r.status, stage: r.stage,
     renderer_type: r.renderer_type, generation_version: r.generation_version, meta: r.meta,
     cost_cents: r.cost_cents, cost_breakdown_cents: r.cost, reserved_cents: r.budget_reserved_cents,

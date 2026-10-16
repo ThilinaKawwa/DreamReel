@@ -89,10 +89,12 @@ export async function POST(req, { params }) {
     return json({ status: 'failed', error: "This reel couldn't be made after several tries. We're looking into it.", canRetry: false });
   }
 
-  // Fair-use cap per person per day
+  // Fair-use cap per person per day. Counted from the render-start log, which people can
+  // add to but never edit or delete — so the cap can't be dodged by editing their own rows.
   const since = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
-  const { count } = await supabase.from('dream_reels').select('dream_id', { count: 'exact', head: true })
-    .eq('user_id', user.id).gte('started_at', since);
+  const { count, error: countErr } = await supabase.from('analytics_events').select('id', { count: 'exact', head: true })
+    .eq('user_id', user.id).eq('event', 'reel_render_started').gte('created_at', since);
+  if (countErr) console.error('render cap check failed', countErr.message);
   if ((count || 0) >= DAILY_LIMIT) {
     return json({ status: 'failed', error: `You've made ${DAILY_LIMIT} reels today. Come back tomorrow.`, canRetry: false }, 429);
   }

@@ -86,7 +86,7 @@ export default function ReelHero({ dream, date, summary }) {
     return fileRef.current;
   }
 
-  function download() {
+  function download({ viaShare = false } = {}) {
     const a = document.createElement('a');
     a.href = reel.downloadUrl;
     a.download = reel.filename || 'dream-reel.mp4';
@@ -94,7 +94,7 @@ export default function ReelHero({ dream, date, summary }) {
     document.body.appendChild(a);
     a.click();
     a.remove();
-    track('video_downloaded');
+    if (!viaShare) track('video_downloaded');
     say('Downloading your Dream Reel');
   }
 
@@ -119,7 +119,7 @@ export default function ReelHero({ dream, date, summary }) {
       }
     }
     // No file sharing on this browser: save it so it can be posted from the camera roll / downloads.
-    download();
+    download({ viaShare: true });
     track('video_shared', { method: 'download' });
   }
 
@@ -169,7 +169,7 @@ export default function ReelHero({ dream, date, summary }) {
       )}
 
       <div className="reel-actions">
-        <button className="btn primary" onClick={download} disabled={!done}>↓ Download video</button>
+        <button className="btn primary" onClick={() => download()} disabled={!done}>↓ Download</button>
         <button className="btn" onClick={share} disabled={!done || Boolean(busy)}>{busy || '⤴ Share'}</button>
       </div>
       {!done && reel.status !== 'failed' && reel.status !== 'unavailable' && (

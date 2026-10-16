@@ -14,7 +14,25 @@ Tell it your dream in the morning. It paints five pictures and plays them back a
 
 Visitors get an instant anonymous account, so there's no sign-up wall.
 
-## Free vs Premium
+## Dream Reel films (shareable video)
+After a dream is painted, its owner's page automatically makes a **film**: a 1080×1920 MP4 (15–35 s) for TikTok, Reels and Shorts.
+1. A short, faithful narration is written (one line per scene) and read aloud (OpenAI).
+2. Each picture gets a slow, eased camera move; scenes cross-fade; captions use the app's fonts.
+3. An original ambient track (`assets/music`, composed by `scripts/compose-music.py`) plays under the voice, ducking when it speaks.
+4. A quiet "Dream Reel" footer and a 2-second end card with your web address (`NEXT_PUBLIC_SITE_URL`).
+
+It renders on Vercel with ffmpeg in about a minute, in the background (`/api/dreams/[id]/reel`). Progress is saved per stage in `dream_reels`; the film, poster and voice are stored in the **private** `dream-videos` bucket and only ever reach their owner through 2-hour signed links. Nothing is rendered twice. If narration fails, the film is still made with music and captions.
+
+Tests: `npm test` (fast unit tests) and `npm run test:render` (makes a real film offline, ~1 min).
+
+## Setting up films (one time, in this order)
+1. Supabase → SQL Editor → run `supabase/migrations/20261015_reels_v1.sql` (adds only new things).
+2. Deploy this code to Vercel.
+3. Supabase → SQL Editor → run `supabase/migrations/20261015_privacy_lockdown.sql` (makes dreams private; strangers can no longer list dreams or files).
+
+Funnel numbers: Supabase → SQL Editor → `select * from funnel_daily;`
+
+## Free vs Premium (switched off for now: `NEXT_PUBLIC_PREMIUM_ENABLED`)
 - **Free:** five painted pictures with a slow zoom, read aloud by a soft narrator, with gentle ambient music (made in the browser — no cost).
 - **Premium (monthly, via Stripe):**
   - **Moving reels** — every scene is animated into a real video clip (fal.ai, Kling). Takes 1–3 minutes after the pictures; the reel swaps the clips in as they finish.

@@ -80,7 +80,20 @@ alter table public.analytics_events enable row level security;
 drop policy if exists "events: insert own" on public.analytics_events;
 create policy "events: insert own" on public.analytics_events
   for insert with check (auth.uid() = user_id);
+-- …except their own render starts, which the server counts to enforce the daily reel cap.
+drop policy if exists "events: read own render starts" on public.analytics_events;
+create policy "events: read own render starts" on public.analytics_events
+  for select using (auth.uid() = user_id and event = 'reel_render_started');
+-- Events are a log: nobody can edit or delete them (no update/delete policies), and the
+-- timestamp is always the server's clock.
+revoke update, delete on public.analytics_events from anon, authenticated;
+create or replace function public.analytics_events_stamp() returns trigger
+language plpgsql as $$ begin new.created_at := now(); return new; end $$;
+drop trigger if exists analytics_events_stamp on public.analytics_events;
+create trigger analytics_events_stamp before insert on public.analytics_events
+  for each row execute function public.analytics_events_stamp();
 create index if not exists analytics_events_event_time on public.analytics_events (event, created_at desc);
+create index if not exists analytics_events_user_event_time on public.analytics_events (user_id, event, created_at desc);
 
 -- 4. Reading a dream someone chose to share — by its id only, never as a list ---------
 create or replace function public.get_shared_dream(p_id uuid)

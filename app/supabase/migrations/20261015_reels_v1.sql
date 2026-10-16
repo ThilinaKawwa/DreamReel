@@ -88,7 +88,7 @@ create policy "events: read own render starts" on public.analytics_events
 -- timestamp is always the server's clock.
 revoke update, delete on public.analytics_events from anon, authenticated;
 create or replace function public.analytics_events_stamp() returns trigger
-language plpgsql as $$ begin new.created_at := now(); return new; end $$;
+language plpgsql set search_path = public as $$ begin new.created_at := now(); return new; end $$;
 drop trigger if exists analytics_events_stamp on public.analytics_events;
 create trigger analytics_events_stamp before insert on public.analytics_events
   for each row execute function public.analytics_events_stamp();

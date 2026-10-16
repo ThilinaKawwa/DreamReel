@@ -1,14 +1,37 @@
-// Cost model for a cinematic Dream Reel. Pure — used for budget reservation, the
-// per-reel cost record and the pricing table in the README. Prices: lib/providers PRICES.
-export const UNIT = {
-  image: 0.04,            // nano-banana / nano-banana edit, per image
-  scenicPerSecond: 0.07,  // Kling 2.5 Turbo Pro i2v
-  identityPerSecond: 0.112, // Kling O1 reference-to-video
-  shotSeconds: 5,
-  llmDirector: 0.03,      // DreamBible + storyboard (gpt-4.1, ~6k tokens in / 2.5k out in total)
-  ttsPerLine: 0.002,      // gpt-4o-mini-tts, ~4 s per line
-  transcribe: 0.003,      // gpt-4o-mini-transcribe, ~1 min of speech
-};
+// Cost model for a cinematic Dream Reel. Pure — used for budget reservation, the per-reel
+// cost record (with a usage line per provider call) and the pricing table in the README.
+//
+// PRICE SOURCES (list prices, checked 2026-10-16; fal.ai and openai.com could not be opened
+// directly from the build sandbox, so these come from search results quoting the providers):
+//   fal  Kling 2.5 Turbo Pro i2v ............ $0.07 / second        (fal model page)
+//   fal  Kling O1 reference-to-video ........ $0.112 / second       (fal model page)
+//   fal  nano-banana, nano-banana/edit ...... ~$0.04 / image        (fal-sourced price trackers)
+//   OpenAI gpt-transcribe ................... $0.0045 / audio minute (OpenAI pricing via secondary sources)
+//   OpenAI gpt-realtime-2.1-mini audio out .. $20 / 1M audio tokens (OpenAI model page via search)
+//        → ESTIMATE ~$0.024 / spoken minute, ASSUMING ~1,200 audio tokens per minute (not verified)
+//   OpenAI gpt-4.1 (director) ............... ESTIMATE ~$0.015 per call (≈3k tokens in / 1.2k out;
+//                                              per-token price not re-verified this session)
+// Every unit can be overridden with PRICE_* environment variables.
+const num = (v, d) => (v != null && v !== '' && Number.isFinite(Number(v)) ? Number(v) : d);
+
+export function units(env = process.env) {
+  return {
+    image: num(env.PRICE_NANO_BANANA, 0.04),
+    scenicPerSecond: num(env.PRICE_KLING_25_PER_S, 0.07),
+    identityPerSecond: num(env.PRICE_KLING_O1_PER_S, 0.112),
+    shotSeconds: 5,
+    directorCall: num(env.PRICE_DIRECTOR_CALL, 0.015),
+    transcribePerMinute: num(env.PRICE_TRANSCRIBE_PER_MIN, 0.0045),
+    ttsPerMinute: num(env.PRICE_TTS_PER_MIN, 0.024),
+    ttsSecondsPerLine: 4,
+  };
+}
+export const UNIT = units();
+
+/** One line of the admin cost report. */
+export function usageLine({ part, provider, model, unit, quantity, unitPrice }) {
+  return { part, provider, model, unit, quantity: round(quantity), unit_price_usd: unitPrice, usd: round(quantity * unitPrice) };
+}
 
 /**
  * @param {object} p
@@ -17,17 +40,18 @@ export const UNIT = {
  * @param {number} p.references     reference images (fronts + three-quarters + places + objects)
  * @param {number} [p.failedShots]  shots that needed one retry
  * @param {number} [p.failedImages] images that needed one retry
+ * @param {number} [p.speechMinutes] length of the recorded dream
  */
-export function estimateReel({ shots, identityShots, references, failedShots = 0, failedImages = 0 }, u = UNIT) {
+export function estimateReel({ shots, identityShots, references, failedShots = 0, failedImages = 0, speechMinutes = 1 }, u = UNIT) {
   const scenic = shots - identityShots;
   const video = (scenic * u.scenicPerSecond + identityShots * u.identityPerSecond) * u.shotSeconds;
   const retryVideo = failedShots * u.identityPerSecond * u.shotSeconds; // pessimistic: retries priced as identity shots
   const parts = {
-    llm: u.llmDirector + u.transcribe,
+    llm: 2 * u.directorCall + speechMinutes * u.transcribePerMinute,
     references: references * u.image,
     keyframes: shots * u.image,
     video,
-    tts: shots * u.ttsPerLine,
+    tts: shots * (u.ttsSecondsPerLine / 60) * u.ttsPerMinute,
     retries: retryVideo + failedImages * u.image,
   };
   const total = Object.values(parts).reduce((a, b) => a + b, 0);
@@ -39,4 +63,4 @@ export function reservationFor(maxShots) {
   return estimateReel({ shots: maxShots, identityShots: maxShots, references: Math.min(8, maxShots + 3) }).total;
 }
 
-const round = (x) => Math.round(x * 1000) / 1000;
+const round = (x) => Math.round(x * 10000) / 10000;

@@ -1,3 +1,4 @@
+import { models } from '../models.js';
 // Turns the dreamer's words into a short, faithful, cinematic narration —
 // one line per scene — and picks the mood of the music.
 
@@ -38,7 +39,7 @@ export async function writeNarration(openai, dream) {
   if (!openai || !scenes.length) return fallback;
   try {
     const completion = await openai.chat.completions.create({
-      model: process.env.NARRATION_MODEL || 'gpt-4o-mini',
+      model: models().narrationLegacy,
       temperature: 0.7,
       response_format: { type: 'json_object' },
       messages: [

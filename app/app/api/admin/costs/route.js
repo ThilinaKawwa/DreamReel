@@ -18,7 +18,7 @@ export async function GET(req) {
   const [{ data: budget }, { data: rows }] = await Promise.all([
     admin.from('generation_budget').select('*').eq('day', day).maybeSingle(),
     admin.from('dream_productions')
-      .select('dream_id, user_id, env, tier, status, stage, renderer_type, generation_version, meta, cost, cost_cents, budget_reserved_cents, error, assets, started_at, completed_at')
+      .select('dream_id, user_id, env, tier, status, stage, renderer_type, generation_version, meta, cost, cost_cents, budget_reserved_cents, error, assets, usage, started_at, completed_at')
       .order('started_at', { ascending: false }).limit(50),
   ]);
   // Admin-only 1-hour links to finished test reels, for quality review.
@@ -32,6 +32,9 @@ export async function GET(req) {
     dream_id: r.dream_id, env: r.env, tier: r.tier, status: r.status, stage: r.stage,
     renderer_type: r.renderer_type, generation_version: r.generation_version, meta: r.meta,
     cost_cents: r.cost_cents, cost_breakdown_cents: r.cost, reserved_cents: r.budget_reserved_cents,
+    // Per provider/model/billing unit: estimated usage and estimated cost (list prices, see lib/cinema/costs.js).
+    usage_summary: summarise(r.usage || []),
+    usage_lines: r.usage || [],
     error: r.error, last_error: r.assets?.lastError || null,
     shots: Object.entries(r.assets?.clips || {}).map(([id, c]) => ({
       id, mode: c.mode, provider: c.provider, model: c.model, attempts: c.attempts, status: c.status, error: c.error || null, seconds: c.seconds || null,
@@ -48,4 +51,16 @@ export async function GET(req) {
     },
     productions,
   });
+}
+
+function summarise(lines) {
+  const by = {};
+  for (const l of lines) {
+    const k = `${l.provider}|${l.model}|${l.unit}`;
+    by[k] ||= { provider: l.provider, model: l.model, billing_unit: l.unit, estimated_usage: 0, estimated_usd: 0, calls: 0 };
+    by[k].estimated_usage = Math.round((by[k].estimated_usage + (l.quantity || 0)) * 1000) / 1000;
+    by[k].estimated_usd = Math.round((by[k].estimated_usd + (l.usd || 0)) * 10000) / 10000;
+    by[k].calls += 1;
+  }
+  return Object.values(by);
 }

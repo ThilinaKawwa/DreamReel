@@ -7,6 +7,7 @@ import { logEvent } from '@/lib/analytics-server';
 import { submitAnimation, FREE_IMAGE_MODEL, PREMIUM_IMAGE_MODEL } from '@/lib/video';
 import { getEntitlements, claimCredit, refundCredit } from '@/lib/entitlements';
 import { underLimit } from '@/lib/ratelimit';
+import { transcriptionProvider } from '@/lib/audio/transcription';
 import { cinematicReady, createProduction, kickWorker } from '@/lib/cinema/start';
 
 // Let this function run for up to 60 seconds (painting 5 pictures takes ~15–30s).
@@ -58,12 +59,8 @@ export async function POST(req) {
   let transcript = typed;
   if (!transcript && audio && typeof audio === 'object' && audio.size > 0) {
     try {
-      const result = await openai.audio.transcriptions.create({
-        file: audio,
-        model: 'gpt-4o-mini-transcribe',
-        prompt: 'A person describing a dream they had last night.',
-      });
-      transcript = (result.text || '').trim();
+      const result = await transcriptionProvider(openai).transcribe(audio, { prompt: 'A person describing a dream they had last night.' });
+      transcript = result.text;
     } catch (e) {
       console.error('transcription failed', e);
       return json({ error: "Couldn't hear that clearly. Try again, or type your dream instead." }, 400);

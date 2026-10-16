@@ -1,3 +1,4 @@
+import { models } from '../models.js';
 // DREAM DIRECTOR — step 2: plan the film.
 // Turns the DreamBible into 3–6 shots using real film grammar: one clear motion
 // idea per shot, every shot pointing at fixed character/location/object IDs.
@@ -123,7 +124,7 @@ export function normalizeStoryboard(raw, bible, { maxShots }) {
   return { title: str(raw?.title, 60) || 'Last night', promptVersion: STORYBOARD_PROMPT_VERSION, shots, narrationReplaced: replaced };
 }
 
-export async function buildStoryboard(openai, bible, { maxShots = 5, model = process.env.DIRECTOR_MODEL || 'gpt-4.1' } = {}) {
+export async function buildStoryboard(openai, bible, { maxShots = 5, model = models().director } = {}) {
   let lastErr;
   const bibleForModel = { ...bible, originalTranscript: undefined };
   for (let attempt = 0; attempt < 2; attempt++) {

@@ -32,9 +32,9 @@ export function pickMimeType() {
   return c.find((t) => MediaRecorder.isTypeSupported(t)) || '';
 }
 
-/** Plays MP3 bytes (base64 or Blob). Returns the Audio element so callers can stop it. */
-export function playAudio(src) {
-  const url = typeof src === 'string' ? `data:audio/mpeg;base64,${src}` : URL.createObjectURL(src);
+/** Plays audio (base64 WAV or a Blob). Returns the Audio element so callers can stop it. */
+export function playAudio(src, type = 'audio/wav') {
+  const url = typeof src === 'string' ? `data:${type};base64,${src}` : URL.createObjectURL(src);
   const a = new Audio(url);
   a.play().catch(() => {});
   return a;

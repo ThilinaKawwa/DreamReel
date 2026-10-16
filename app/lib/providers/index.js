@@ -57,26 +57,44 @@ export const VIDEO_ADAPTERS = {
       prompt, image_url: startImageUrl, duration: String(duration >= 10 ? 10 : 5), negative_prompt: negative, cfg_scale: 0.5,
     }),
   },
-  // Identity shots: Kling O1 reference-to-video. Each recurring person/object is an
-  // "element" (frontal image + extra angles); the keyframe is @Image1, the opening frame.
-  // NOTE: field names follow fal's published examples (elements / frontal_image_url /
-  // reference_image_urls / image_urls / @ElementN / @ImageN). Validate on the first real run.
+  // Identity shots: Kling O1 Reference image-to-video (fal schema confirmed 2026-10-16):
+  //   image_urls: [start frame]          → referenced in the prompt as @Image1
+  //   elements: [{ frontal_image_url, reference_image_urls[] }] → @Element1, @Element2 …
+  //   at most 7 inputs in total across start frame + every frontal + every reference image
+  //   duration "5", aspect_ratio "9:16"
   'kling-o1-ref': {
     model: 'fal-ai/kling-video/o1/reference-to-video',
     referenceConditioned: true,
-    input: ({ startImageUrl, prompt, duration, elements = [] }) => ({
-      prompt: [
-        '@Image1 is the opening frame of this shot; start exactly from it.',
-        ...elements.map((e, i) => `@Element${i + 1} is ${e.label}; keep their exact appearance throughout.`),
-        prompt,
-      ].join(' ').slice(0, 2400),
-      elements: elements.map((e) => ({ frontal_image_url: e.frontal, reference_image_urls: e.references.slice(0, 3) })),
-      image_urls: [startImageUrl],
-      duration: String(duration >= 10 ? 10 : 5),
-      aspect_ratio: '9:16',
-    }),
+    input: (req) => o1Input(req),
   },
 };
+
+export const O1_MAX_INPUTS = 7;
+
+/**
+ * Builds the Kling O1 Reference request. Pure (tested in test/audio-o1.test.mjs).
+ * Keeps within 7 inputs: extra reference angles are dropped first, then extra elements.
+ */
+export function o1Input({ startImageUrl, prompt, duration, elements = [] }) {
+  let els = elements.filter((e) => e && e.frontal).map((e) => ({ ...e, references: (e.references || []).filter(Boolean) }));
+  const count = () => 1 + els.reduce((n, e) => n + 1 + e.references.length, 0);
+  while (count() > O1_MAX_INPUTS && els.some((e) => e.references.length)) {
+    const widest = els.reduce((a, b) => (b.references.length > a.references.length ? b : a));
+    widest.references = widest.references.slice(0, -1);
+  }
+  while (count() > O1_MAX_INPUTS) els = els.slice(0, -1);
+  return {
+    prompt: [
+      '@Image1 is the opening frame of this shot; start exactly from it.',
+      ...els.map((e, i) => `@Element${i + 1} is ${e.label}; keep their exact appearance throughout.`),
+      prompt,
+    ].join(' ').slice(0, 2400),
+    image_urls: [startImageUrl],
+    elements: els.map((e) => ({ frontal_image_url: e.frontal, reference_image_urls: e.references })),
+    duration: String(duration >= 10 ? 10 : 5),
+    aspect_ratio: '9:16',
+  };
+}
 
 export function videoProvider(kind) {
   const id = VIDEO_ADAPTERS[kind] ? kind : 'kling-i2v';

@@ -18,6 +18,7 @@ create table if not exists public.dream_productions (
   assets jsonb not null default '{}'::jsonb,   -- references / keyframes / clips / voice: storage paths, provider, model, attempts, errors
   meta jsonb not null default '{}'::jsonb,     -- director/reference/video models, prompt versions, deployment
   cost jsonb not null default '{}'::jsonb,     -- estimated cents by part: llm, references, keyframes, video, tts, retries
+  usage jsonb not null default '[]'::jsonb,    -- one line per provider call: provider, model, unit, quantity, estimated USD
   cost_cents int not null default 0,           -- running total estimate
   budget_reserved_cents int not null default 0,
   renderer_type text check (renderer_type in ('cinematic_video', 'image_fallback')),
@@ -38,6 +39,7 @@ create index if not exists dream_productions_day on public.dream_productions (st
 -- 2. Which renderer and pipeline produced each finished film.
 alter table public.dream_reels add column if not exists renderer_type text;
 alter table public.dream_reels add column if not exists generation_version text;
+alter table public.dream_productions add column if not exists usage jsonb not null default '[]'::jsonb; -- for re-runs
 
 -- 3. PRIVATE media for Dream Director: references, keyframes, clips, narration, final film.
 --    No storage policies = no browser access at all. The server checks ownership and hands

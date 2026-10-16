@@ -1,3 +1,4 @@
+import { models } from '../models.js';
 // DREAM DIRECTOR — step 1: understand the dream.
 // Turns messy spoken words into a DreamBible: a structured, persistent record of
 // who and what is in the dream, so every later shot draws from the same facts.
@@ -153,7 +154,7 @@ export function normalizeBible(raw, originalTranscript) {
 }
 
 /** Calls the model and returns a validated DreamBible. One retry on a malformed answer. */
-export async function buildDreamBible(openai, transcript, { model = process.env.DIRECTOR_MODEL || 'gpt-4.1' } = {}) {
+export async function buildDreamBible(openai, transcript, { model = models().director } = {}) {
   let lastErr;
   for (let attempt = 0; attempt < 2; attempt++) {
     try {

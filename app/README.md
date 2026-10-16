@@ -66,7 +66,14 @@ Credits are claimed in the database (`reel_credits`). Retrying the same dream ne
 | Premium, plus one failed-shot retry | about $3.38 |
 | Premium, worst reasonable case | about $5.60 |
 
-The list prices used are Kling 2.5 Turbo Pro $0.07/s, Kling O1 reference $0.112/s, nano-banana $0.04/image, and OpenAI about $0.04 per film. Override them with the `PRICE_*` variables if the providers change their prices.
+The list prices used are Kling 2.5 Turbo Pro $0.07/s, Kling O1 reference $0.112/s and nano-banana $0.04/image. OpenAI is estimated at about $0.04 per film: gpt-transcribe $0.0045/min, gpt-realtime-2.1-mini speech about $0.024/min, gpt-4.1 about $0.015 per call. Sources, check dates and assumptions are in `lib/cinema/costs.js`. Override any price with the `PRICE_*` variables if the providers change them. Each film records one usage line per provider call (provider, model, billing unit, quantity, estimated cost), and `/api/admin/costs` sums them.
+
+### Audio models
+| Job | Model | How it's called |
+|---|---|---|
+| Recording → text | `gpt-transcribe` | `/v1/audio/transcriptions` (same as before) |
+| Narration and Orin's voice | `gpt-realtime-2.1-mini` | a short server-side Realtime WebSocket session per line, returning WAV; the spoken transcript is checked against the text |
+| Fallback speech | `gpt-4o-mini-tts` | `/v1/audio/speech`, only if a Realtime line fails or isn't read word-for-word. OpenAI removes it on 2027-01-06. Set `TTS_FALLBACK_MODEL=` (empty) to turn it off. |
 
 ## Dream Reel films (shareable video)
 After a dream is painted, its owner's page automatically makes a **film**: a 1080×1920 MP4 (15–35 s) for TikTok, Reels and Shorts.

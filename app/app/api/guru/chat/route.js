@@ -1,6 +1,7 @@
 import OpenAI from 'openai';
 import { json, requireUser, getProfile } from '@/lib/server';
 import { logEvent } from '@/lib/analytics-server';
+import { transcriptionProvider } from '@/lib/audio/transcription';
 import { underLimit } from '@/lib/ratelimit';
 import { expressionFor, EXPRESSIONS, parseGuruReply as parseReply } from '@/lib/guru-expression';
 import { getEntitlements } from '@/lib/entitlements';
@@ -58,12 +59,8 @@ export async function POST(req) {
   let question = String(form.get('text') || '').trim().slice(0, 1500);
   if (viaVoice) {
     try {
-      const t = await openai.audio.transcriptions.create({
-        file: audio,
-        model: 'gpt-4o-mini-transcribe',
-        prompt: 'Someone asking a wise dream interpreter about their dream.',
-      });
-      question = (t.text || '').trim().slice(0, 1500);
+      const t = await transcriptionProvider(openai).transcribe(audio, { prompt: 'Someone asking a wise dream interpreter about their dream.' });
+      question = t.text.slice(0, 1500);
     } catch (e) {
       console.error('guru transcription failed', e);
       return json({ error: "I couldn't hear that clearly. Try again, a little closer to the phone." }, 400);
@@ -128,7 +125,7 @@ export async function POST(req) {
   // Behaviour only — never the question or the answer.
   await logEvent(supabase, user.id, 'guru_response_completed', { voice: viaVoice, spoken: Boolean(audioB64) });
   if (viaVoice) await logEvent(supabase, user.id, 'guru_voice_started', {});
-  return json({ question, answer, messageId: saved?.id || null, audio: audioB64, expression: expression || expressionFor(answer) });
+  return json({ question, answer, messageId: saved?.id || null, audio: audioB64, audioType: 'audio/wav', expression: expression || expressionFor(answer) });
 }
 
 // The model picks Orin's face for the reply from a fixed list (no extra AI call).

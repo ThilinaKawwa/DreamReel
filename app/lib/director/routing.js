@@ -1,3 +1,5 @@
+import { models } from '../models.js';
+
 // Decides, per dream and per shot, which references are worth generating and which
 // video mode to use. Pure functions — no model IDs here (those live in lib/providers).
 //
@@ -44,7 +46,7 @@ export function routeShot(storyboard, shot, env = process.env) {
   const things = shot.objectIds.filter((o) => (u.object[o] || 0) >= 2);
   const identityKeys = [...people.map((c) => `character:${c}`), ...things.map((o) => `object:${o}`)].slice(0, 3);
   if (identityKeys.length && env.IDENTITY_ROUTING !== 'off') {
-    return { mode: 'identity', provider: env.IDENTITY_VIDEO_PROVIDER || 'kling-o1-ref', identityKeys };
+    return { mode: 'identity', provider: models(env).identityVideo, identityKeys };
   }
-  return { mode: 'scenic', provider: env.SCENIC_VIDEO_PROVIDER || 'kling-i2v', identityKeys: [] };
+  return { mode: 'scenic', provider: models(env).scenicVideo, identityKeys: [] };
 }

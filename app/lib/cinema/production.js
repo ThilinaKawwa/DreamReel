@@ -21,7 +21,8 @@ import { renderReel } from '@/lib/reel/render';
 import { soundtrackFor, FONTS_DIR } from '@/lib/reel/assets';
 import { BRAND, siteDomain } from '@/lib/brand';
 import { checkClip } from '@/lib/cinema/quality';
-import { reservationFor, UNIT } from '@/lib/cinema/costs';
+import { reservationFor, UNIT, usageLine } from '@/lib/cinema/costs';
+import { models } from '@/lib/models';
 import { MEDIA_BUCKET, mediaPath, storeFromProvider, storeBytes, readBytes, signedUrl } from '@/lib/cinema/media';
 import { deploymentEnv } from '@/lib/cinema/env';
 import { cinematicVerdict } from '@/lib/cinema/verdict';
@@ -62,11 +63,16 @@ export async function advanceProduction(admin, dreamId, deadline) {
     await admin.from('dream_productions').update({ ...patch, updated_at: now() }).eq('dream_id', dreamId);
   };
   const cost = { llm: 0, references: 0, keyframes: 0, video: 0, tts: 0, retries: 0, ...(p.cost || {}) };
-  const addCost = (part, usd) => {
-    cost[part] = Math.round((cost[part] + cents(usd)) * 10) / 10;
+  const usage = Array.isArray(p.usage) ? [...p.usage] : [];
+  // Every provider call adds a usage line (provider, model, billing unit, quantity, est. USD).
+  const addCost = (part, line) => {
+    const l = usageLine({ part, ...line });
+    usage.push(l);
+    cost[part] = Math.round((cost[part] + cents(l.usd)) * 10) / 10;
     p.cost_cents = Math.round(Object.values(cost).reduce((a, b) => a + b, 0));
   };
-  const costPatch = () => ({ cost, cost_cents: p.cost_cents || 0 });
+  const costPatch = () => ({ cost, cost_cents: p.cost_cents || 0, usage: usage.slice(-300) });
+  const M = models();
   const timeLeft = () => deadline - Date.now();
   const plan = accessPlans()[p.tier === 'premium' ? 'premium' : 'free'];
 
@@ -82,10 +88,11 @@ export async function advanceProduction(admin, dreamId, deadline) {
     if (!p.meta?.director_model) {
       await save({
         meta: {
-          director_model: process.env.DIRECTOR_MODEL || 'gpt-4.1',
+          director_model: M.director,
           reference_model: images.model, keyframe_model: images.editModel,
-          identity_video: videoProvider(process.env.IDENTITY_VIDEO_PROVIDER || 'kling-o1-ref').model,
-          scenic_video: videoProvider(process.env.SCENIC_VIDEO_PROVIDER || 'kling-i2v').model,
+          identity_video: videoProvider(M.identityVideo).model,
+          scenic_video: videoProvider(M.scenicVideo).model,
+          transcription_model: M.transcription, tts_model: M.tts, tts_fallback_model: M.ttsFallback || null,
           prompt_versions: { bible: BIBLE_PROMPT_VERSION, storyboard: STORYBOARD_PROMPT_VERSION, compiler: COMPILER_VERSION },
           env: p.env, deployment: process.env.VERCEL_DEPLOYMENT_ID || null,
         },
@@ -111,7 +118,10 @@ export async function advanceProduction(admin, dreamId, deadline) {
     if (!p.bible) {
       await save({ status: 'processing', stage: 'understanding' });
       const bible = await buildDreamBible(openai, dream.transcript);
-      addCost('llm', UNIT.llmDirector / 2 + UNIT.transcribe);
+      addCost('llm', { provider: 'openai', model: M.director, unit: 'call', quantity: 1, unitPrice: UNIT.directorCall });
+      // The recording itself was transcribed when the dream was saved; estimated from its length (~150 words/min).
+      const minutes = Math.max(0.1, String(dream.transcript || '').split(/\s+/).length / 150);
+      addCost('llm', { provider: 'openai', model: M.transcription, unit: 'audio minute (est.)', quantity: minutes, unitPrice: UNIT.transcribePerMinute });
       await save({ bible, ...costPatch() });
       await logEvent(admin, p.user_id, 'dream_parse_completed', { characters: bible.characters.length, locations: bible.locations.length, objects: bible.objects.length });
     }
@@ -121,7 +131,7 @@ export async function advanceProduction(admin, dreamId, deadline) {
     if (!p.storyboard) {
       await save({ stage: 'storyboard' });
       const storyboard = await buildStoryboard(openai, bible, { maxShots: plan.maxShots });
-      addCost('llm', UNIT.llmDirector / 2);
+      addCost('llm', { provider: 'openai', model: M.director, unit: 'call', quantity: 1, unitPrice: UNIT.directorCall });
       await save({ storyboard, ...costPatch() });
       await admin.from('dreams').update({ title: storyboard.title }).eq('id', dreamId);
       await logEvent(admin, p.user_id, 'storyboard_completed', { shots: storyboard.shots.length, narration_replaced: storyboard.narrationReplaced });
@@ -143,7 +153,7 @@ export async function advanceProduction(admin, dreamId, deadline) {
           const out = r.from
             ? await images.edit({ prompt, imageUrls: [await signedUrl(admin, assets.references[r.from].path, PROVIDER_LINK_SECONDS)], aspect: '3:4' })
             : await images.generate({ prompt, aspect: r.kind === 'location' ? '9:16' : '3:4' });
-          addCost(prev.attempts ? 'retries' : 'references', out.cost);
+          addCost(prev.attempts ? 'retries' : 'references', { provider: 'fal', model: out.model, unit: 'image', quantity: 1, unitPrice: out.cost });
           const stored = await storeFromProvider(admin, own(`ref-${r.key}.jpg`), out.url, 'image/', 20e6);
           assets.references[r.key] = { path: stored.path, model: out.model, view: r.view, attempts: prev.attempts + 1 };
           if (r.kind === 'character' && r.view === 'front') await logEvent(admin, p.user_id, 'character_reference_generated', {});
@@ -165,7 +175,7 @@ export async function advanceProduction(admin, dreamId, deadline) {
         try {
           const refUrls = (await Promise.all(req.refs.map((k) => signedUrl(admin, assets.references[k].path, PROVIDER_LINK_SECONDS)))).filter(Boolean);
           const out = refUrls.length ? await images.edit({ prompt: req.prompt, imageUrls: refUrls }) : await images.generate({ prompt: req.prompt });
-          addCost(prev.attempts ? 'retries' : 'keyframes', out.cost);
+          addCost(prev.attempts ? 'retries' : 'keyframes', { provider: 'fal', model: out.model, unit: 'image', quantity: 1, unitPrice: out.cost });
           const stored = await storeFromProvider(admin, own(`kf-${shot.id}.jpg`), out.url, 'image/', 20e6);
           assets.keyframes[shot.id] = { path: stored.path, model: out.model, refs: req.refs, attempts: prev.attempts + 1 };
         } catch (e) {
@@ -195,7 +205,7 @@ export async function advanceProduction(admin, dreamId, deadline) {
         if (!c.requestId || c.status === 'failed' || timedOut) {
           if (c.attempts >= maxAttempts) { assets.clips[shot.id] = { ...c, status: 'failed' }; continue; }
           const sub = await submitShot(admin, { p, bible, storyboard, shot, assets, own, retry: c.attempts > 0 });
-          if (sub.cost) addCost(c.attempts > 0 ? 'retries' : 'video', sub.cost);
+          if (sub.cost) addCost(c.attempts > 0 ? 'retries' : 'video', { provider: 'fal', model: sub.record.model, unit: 'video second', quantity: sub.seconds, unitPrice: sub.perSecond });
           assets.clips[shot.id] = { ...c, ...sub.record, attempts: c.attempts + 1 };
           if (sub.record.status === 'pending') await logEvent(admin, p.user_id, 'video_clip_started', { attempt: c.attempts + 1, mode: sub.record.mode });
           if (sub.record.status !== 'failed' || c.attempts + 1 < maxAttempts) pending++;
@@ -249,8 +259,8 @@ export async function advanceProduction(admin, dreamId, deadline) {
         if (!spoken) { failed.push(s.id); return; }
         try {
           const vp = await storeBytes(admin, own(`voice-${s.id}.wav`), spoken.wav, 'audio/wav');
-          assets.voice[s.id] = { path: vp, seconds: spoken.seconds };
-          addCost('tts', UNIT.ttsPerLine);
+          assets.voice[s.id] = { path: vp, seconds: spoken.seconds, model: spoken.model };
+          addCost('tts', { provider: 'openai', model: spoken.model, unit: 'audio minute (est.)', quantity: spoken.seconds / 60, unitPrice: UNIT.ttsPerMinute });
         } catch { failed.push(s.id); }
       }));
       assets.voiceFailed = failed;
@@ -308,7 +318,7 @@ async function submitShot(admin, { p, bible, storyboard, shot, assets, own, retr
   // Identity shots need their canonical references; if those failed, use the scenic mode.
   const elements = route.identityKeys.filter((k) => assets.references[k]?.path);
   const mode = route.mode === 'identity' && elements.length ? 'identity' : 'scenic';
-  const video = videoProvider(mode === 'identity' ? route.provider : (process.env.SCENIC_VIDEO_PROVIDER || 'kling-i2v'));
+  const video = videoProvider(mode === 'identity' ? route.provider : models().scenicVideo);
   const shotCost = video.costPerSecond * vr.duration;
   if (retry) {
     const { data: ok } = await admin.rpc('reserve_generation_budget', { p_cents: Math.ceil(shotCost * 100), p_cap_cents: budgetCapCents() });
@@ -322,10 +332,10 @@ async function submitShot(admin, { p, bible, storyboard, shot, assets, own, retr
       const frontal = await signedUrl(admin, assets.references[k].path, PROVIDER_LINK_SECONDS);
       const tq = assets.references[`${k}:three_quarter`]?.path;
       const extra = tq ? await signedUrl(admin, tq, PROVIDER_LINK_SECONDS) : null;
-      return { label: vr.labels?.[k] || k.split(':')[1], frontal, references: [extra || frontal] };
+      return { label: vr.labels?.[k] || k.split(':')[1], frontal, references: extra ? [extra] : [] };
     })) : [];
     const { requestId } = await video.submit({ startImageUrl, prompt: vr.prompt, negative: vr.negative, duration: vr.duration, elements: els });
-    return { cost: shotCost, record: { status: 'pending', requestId, mode, provider: video.id, model: video.model, submittedAt: now(), error: null } };
+    return { cost: shotCost, seconds: vr.duration, perSecond: video.costPerSecond, record: { status: 'pending', requestId, mode, provider: video.id, model: video.model, submittedAt: now(), error: null } };
   } catch (e) {
     return { record: { status: 'failed', error: String(e.message).slice(0, 160), mode, provider: video.id, model: video.model } };
   }

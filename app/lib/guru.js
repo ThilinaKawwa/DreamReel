@@ -2,17 +2,19 @@
 // Rename him in lib/guru-public.js; voice settings are below.
 
 import { GURU_NAME } from '@/lib/guru-public';
+import { models } from '@/lib/models';
+import { speechProvider } from '@/lib/audio/speech';
 
 export { GURU_NAME };
-export const GURU_MODEL = process.env.GURU_MODEL || 'gpt-4.1';
-export const GURU_VOICE = process.env.GURU_VOICE || 'cedar';
-export const TTS_MODEL = 'gpt-4o-mini-tts';
+export const GURU_MODEL = models().guru;
+export const GURU_VOICE = models().guruVoice; // one fixed voice for Orin, always
+export const TTS_MODEL = models().tts;
 export const GURU_DAILY_MESSAGES = Number(process.env.GURU_DAILY_MESSAGES || 60);
 
 export const GURU_VOICE_STYLE =
   'Speak as an ancient, kind and wise mystic: a deep, warm, unhurried voice, calm and grounded, with gentle pauses between thoughts. Never theatrical or spooky — reassuring, like a trusted elder by candlelight.';
 
-export const NARRATOR_VOICE = process.env.NARRATOR_VOICE || 'marin';
+export const NARRATOR_VOICE = models().narratorVoice;
 export const NARRATOR_STYLE =
   'Softly narrate a dream, half-whispered and slow, full of wonder, like telling a bedtime story. Leave a small pause at commas.';
 
@@ -140,16 +142,10 @@ export async function loadMemory(supabase, userId, excludeDreamId, limit = 15) {
   return data || [];
 }
 
-/** Text → speech, returns an MP3 Buffer. */
+/** Text → speech in Orin's fixed voice. Returns a WAV Buffer (see lib/audio/speech.js). */
 export async function speak(openai, text, { voice = GURU_VOICE, style = GURU_VOICE_STYLE } = {}) {
-  const res = await openai.audio.speech.create({
-    model: TTS_MODEL,
-    voice,
-    input: text.slice(0, 4000),
-    instructions: style,
-    response_format: 'mp3',
-  });
-  return Buffer.from(await res.arrayBuffer());
+  const out = await speechProvider(openai).speak(text.slice(0, 4000), { voice, style });
+  return out.wav;
 }
 
 /** Strips markdown so a written answer reads naturally when spoken. */

@@ -1,9 +1,13 @@
 import OpenAI from 'openai';
+import { after } from 'next/server';
 import { fal } from '@fal-ai/client';
 import { STYLES, DEFAULT_STYLE } from '@/lib/styles';
-import { json, requireUser, getProfile, isPremium, storeBytes } from '@/lib/server';
+import { json, requireUser, storeBytes } from '@/lib/server';
 import { logEvent } from '@/lib/analytics-server';
 import { submitAnimation, FREE_IMAGE_MODEL, PREMIUM_IMAGE_MODEL } from '@/lib/video';
+import { getEntitlements } from '@/lib/entitlements';
+import { underLimit } from '@/lib/ratelimit';
+import { cinematicReady, createProduction, kickWorker, releaseSlot } from '@/lib/cinema/start';
 
 // Let this function run for up to 60 seconds (painting 5 pictures takes ~15–30s).
 export const maxDuration = 60;
@@ -21,18 +25,22 @@ export async function POST(req) {
     return json({ error: 'The app is missing its OPENAI_API_KEY or FAL_KEY. Add them in Vercel → Settings → Environment Variables.' }, 500);
   }
 
-  const premium = isPremium(await getProfile(supabase, user.id));
-
-  // 2. Daily limit so one person can't run up the bill
-  const limit = Number(premium ? process.env.PREMIUM_DAILY_LIMIT || 5 : process.env.DAILY_LIMIT || 3);
-  const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-  const { count } = await supabase
-    .from('dreams')
-    .select('id', { count: 'exact', head: true })
-    .eq('user_id', user.id)
-    .gte('created_at', since);
-  if ((count || 0) >= limit) {
-    return json({ error: `You've made ${limit} dreams today. Come back tomorrow morning.` }, 429);
+  // 2. What may this person do today? Decided here from the database — never from the browser.
+  const ent = await getEntitlements(supabase, user.id);
+  const premium = ent.plan === 'premium';
+  if (ent.reelsLeftToday === 0) {
+    return json({
+      error: premium ? "You've made today's Dream Reels. Come back tomorrow." : "You've made today's free Dream Reel. Come back tomorrow — or unlock more with Premium.",
+      upgrade: !premium && ent.upgradeAvailable, limit: true,
+    }, 429);
+  }
+  if (!(await underLimit(user.id, 'dream'))) return json({ error: 'Too many dreams in a short time. Please wait a little.' }, 429);
+  if (ent.reelsLeftToday === null) {
+    // Quota table not installed yet: keep the older rolling cap.
+    const limit = Number(premium ? process.env.PREMIUM_DAILY_LIMIT || 5 : process.env.DAILY_LIMIT || 3);
+    const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    const { count } = await supabase.from('dreams').select('id', { count: 'exact', head: true }).eq('user_id', user.id).gte('created_at', since);
+    if ((count || 0) >= limit) return json({ error: `You've made ${limit} dreams today. Come back tomorrow morning.` }, 429);
   }
 
   // 3. Read what was sent: either an audio file or typed text
@@ -73,8 +81,37 @@ export async function POST(req) {
     return json({ error: 'Could not save the dream. Please try again.' }, 500);
   }
 
+  // 6. Take today's reel slot atomically (the database does the counting and locking).
+  let quotaId = null;
+  const claim = await supabase.rpc('claim_reel_quota', { p_dream_id: dream.id });
+  if (!claim.error) {
+    if (!claim.data) {
+      await supabase.from('dreams').delete().eq('id', dream.id);
+      return json({ error: premium ? "You've made today's Dream Reels. Come back tomorrow." : "You've made today's free Dream Reel. Come back tomorrow.", upgrade: !premium && ent.upgradeAvailable, limit: true }, 429);
+    }
+    quotaId = claim.data;
+  } else if (!/function .* does not exist|schema cache/i.test(claim.error.message)) {
+    console.error('quota claim failed', claim.error.message);
+    await supabase.from('dreams').delete().eq('id', dream.id);
+    return json({ error: 'Could not start your dream just now. Please try again.' }, 503);
+  }
+
   const t0 = Date.now();
   await logEvent(supabase, user.id, 'dream_generation_started', { typed: !audio || !audio.size });
+
+  // 7. Dream Director: the cinematic pipeline runs in the background and reports real stages.
+  if (quotaId && (await cinematicReady())) {
+    try {
+      await createProduction({ dreamId: dream.id, userId: user.id, tier: ent.generationTier, quotaId });
+      const origin = new URL(req.url).origin;
+      after(() => kickWorker(dream.id, origin));
+      return json({ id: dream.id, mode: 'cinematic' });
+    } catch (e) {
+      console.error('could not start production', e);
+    }
+  }
+
+  // Fallback: the original picture renderer (labelled image_fallback on the finished reel).
   try {
     // 6. Ask the AI to split the dream into scenes
     const scenes = await writeScenes(openai, transcript);
@@ -107,12 +144,13 @@ export async function POST(req) {
     if (updErr) throw updErr;
 
     await logEvent(supabase, user.id, 'dream_generation_completed', { ms: Date.now() - t0, scenes: built.length });
-    return json({ id: dream.id });
+    return json({ id: dream.id, mode: 'image_fallback' });
   } catch (e) {
     console.error('dream failed', e);
     await supabase.from('dreams').update({ status: 'failed', error: String(e?.message || e).slice(0, 500) }).eq('id', dream.id);
     await logEvent(supabase, user.id, 'dream_generation_failed', { ms: Date.now() - t0 });
-    return json({ error: 'Something went wrong while painting. Your credit was not wasted — try once more.' }, 500);
+    await releaseSlot(quotaId);
+    return json({ error: 'Something went wrong while painting. Please try once more.' }, 500);
   }
 }
 

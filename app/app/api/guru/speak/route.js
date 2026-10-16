@@ -1,5 +1,6 @@
 import OpenAI from 'openai';
-import { json, requireUser, getProfile, isPremium } from '@/lib/server';
+import { json, requireUser } from '@/lib/server';
+import { getEntitlements } from '@/lib/entitlements';
 import { speak, plainForSpeech } from '@/lib/guru';
 
 export const maxDuration = 60;
@@ -9,7 +10,7 @@ export const runtime = 'nodejs';
 export async function POST(req) {
   const auth = await requireUser(req);
   if (!auth) return json({ error: 'Not signed in.' }, 401);
-  if (!isPremium(await getProfile(auth.supabase, auth.user.id))) return json({ error: 'Premium only.', upgrade: true }, 402);
+  if (!(await getEntitlements(auth.supabase, auth.user.id)).canUseGuru) return json({ error: 'Premium only.', upgrade: true }, 402);
 
   const { dreamId, messageId } = await req.json().catch(() => ({}));
   // Only speak text the Guru actually wrote for this person — never arbitrary input.

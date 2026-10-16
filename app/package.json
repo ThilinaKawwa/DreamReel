@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "test": "node --test test/*.test.mjs",
-    "test:render": "node test/render-smoke.mjs"
+    "test:render": "node test/render-smoke.mjs && node test/render-clips-smoke.mjs && node test/quality-smoke.mjs"
   },
   "dependencies": {
     "@fal-ai/client": "^1.10.1",

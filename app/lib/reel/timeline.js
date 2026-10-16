@@ -15,17 +15,20 @@ const round = (x) => Math.round(x * 1000) / 1000;
 
 /**
  * @param {Array<number|null>} voiceSeconds  length of each scene's spoken line (null = silent)
+ * @param {{minSeconds?: number[]}} [opts]   per-scene minimum (e.g. the length of its video clip)
  * @returns {{ scenes: Array<{start:number, duration:number, voiceAt:number|null, captionStart:number, captionEnd:number}>,
  *             endCard: {start:number, duration:number}, total:number }}
  */
-export function planTimeline(voiceSeconds) {
+export function planTimeline(voiceSeconds, { minSeconds = [] } = {}) {
   const scenes = [];
   let start = 0;
   voiceSeconds.forEach((voice, i) => {
     const hasVoice = typeof voice === 'number' && voice > 0;
     // Long enough to say the line, breathe, and cross-fade into the next scene without overlap.
     const needed = hasVoice ? voice + VOICE_LEAD + CROSSFADE + 0.35 : SILENT_SCENE;
-    const duration = round(Math.min(Math.max(needed, MIN_SCENE), Math.max(MAX_SCENE, needed)));
+    // Real video clips set a floor: a 5-second shot is shown in full, not cut short.
+    const floor = Math.max(MIN_SCENE, minSeconds[i] || 0);
+    const duration = round(Math.min(Math.max(needed, floor), Math.max(MAX_SCENE, needed, floor)));
     const lead = i === 0 ? VOICE_LEAD + 0.25 : VOICE_LEAD; // first line waits for the fade from black
     scenes.push({
       start: round(start),

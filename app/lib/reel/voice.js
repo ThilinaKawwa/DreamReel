@@ -3,7 +3,7 @@ import { wavSeconds } from './render.js';
 
 export const REEL_VOICE = process.env.NARRATOR_VOICE || 'marin';
 export const REEL_VOICE_STYLE =
-  'Narrate a remembered dream in a warm, calm, gentle voice. Unhurried and intimate, like quietly telling a close friend first thing in the morning. Natural pauses at commas. Not theatrical, not whispery, clearly intelligible.';
+  'You are the person who had this dream, remembering it out loud the next morning. Speak plainly and quietly, as if telling a friend over coffee — natural, a little unsure in places, conversational pacing. Not a narrator, not a storyteller voice, not dramatic, not whispery. Clearly intelligible.';
 
 /** @returns {Promise<{wav: Buffer, seconds: number}|null>} null when speech isn't available */
 export async function speakLine(openai, text) {

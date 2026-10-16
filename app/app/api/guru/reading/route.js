@@ -1,5 +1,6 @@
 import OpenAI from 'openai';
-import { json, requireUser, getProfile, isPremium } from '@/lib/server';
+import { json, requireUser, getProfile } from '@/lib/server';
+import { getEntitlements } from '@/lib/entitlements';
 import { GURU_MODEL, readingSystemPrompt, dreamNotes, memoryNotes, loadMemory, tradition } from '@/lib/guru';
 
 export const maxDuration = 60;
@@ -14,11 +15,12 @@ export async function POST(req) {
   const { dreamId } = await req.json().catch(() => ({}));
   if (!/^[0-9a-f-]{36}$/i.test(dreamId || '')) return json({ error: 'Which dream?' }, 400);
 
+  // Access is decided on the server from the plan the Stripe webhook wrote — never from the request.
+  if (!(await getEntitlements(supabase, user.id)).canUseGuru) return json({ error: 'The Guru is part of Premium.', upgrade: true }, 402);
   const { data: existing } = await supabase.from('dream_readings').select('*').eq('dream_id', dreamId).maybeSingle();
   if (existing) return json({ reading: existing });
 
   const profile = await getProfile(supabase, user.id);
-  if (!isPremium(profile)) return json({ error: 'The Guru is part of Premium.', upgrade: true }, 402);
 
   const { data: dream } = await supabase.from('dreams').select('*').eq('id', dreamId).eq('user_id', user.id).maybeSingle();
   if (!dream || dream.status !== 'ready') return json({ error: 'That dream is not ready yet.' }, 404);

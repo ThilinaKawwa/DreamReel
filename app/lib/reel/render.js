@@ -34,7 +34,7 @@ function kenBurns(move, frames) {
 /**
  * @param {object} job
  * @param {string} job.workDir      scratch folder (inputs already downloaded into it)
- * @param {Array<{image:string, clip?:string|null}>} job.scenes   local file paths
+ * @param {Array<{image:string, clip?:string|null, clipSeconds?:number}>} job.scenes   local file paths
  * @param {Array<{file:string, seconds:number}|null>} job.voices   narration per scene (null = silent)
  * @param {string[]} job.lines      caption per scene
  * @param {string|null} job.music   local path to the soundtrack
@@ -46,7 +46,9 @@ export async function renderReel(job) {
   const { workDir, scenes, voices, lines, music, fontsDir, brand } = job;
   if (!scenes.length) throw new Error('No scenes to render');
 
-  const timeline = planTimeline(scenes.map((_, i) => voices[i]?.seconds ?? null));
+  const timeline = planTimeline(scenes.map((_, i) => voices[i]?.seconds ?? null), {
+    minSeconds: scenes.map((s) => (s.clip && s.clipSeconds ? Math.min(s.clipSeconds, 10) : 0)),
+  });
   const total = timeline.total;
 
   // Captions file + fonts sit next to each other in the work folder, so the
@@ -64,9 +66,15 @@ export async function renderReel(job) {
     const dur = timeline.scenes[i].duration;
     const frames = Math.round(dur * FPS);
     if (scene.clip) {
-      args.push('-stream_loop', '-1', '-t', String(dur + 0.5), '-i', scene.clip);
+      // A real AI video shot: played once, never looped. If the narration needs longer
+      // than the clip, it is slowed slightly (max 1.3×) and then holds its last frame.
+      const clipSec = scene.clipSeconds || dur;
+      const slow = dur > clipSec ? Math.min(1.3, dur / clipSec) : 1;
+      const hold = Math.max(0, dur - clipSec * slow + 0.2);
+      args.push('-i', scene.clip);
       filters.push(
         `[${input}:v]scale=${WIDTH}:${HEIGHT}:force_original_aspect_ratio=increase:flags=lanczos,crop=${WIDTH}:${HEIGHT},` +
+        `setpts=${slow.toFixed(3)}*(PTS-STARTPTS),tpad=stop_mode=clone:stop_duration=${hold.toFixed(3)},` +
         `trim=duration=${dur},setpts=PTS-STARTPTS,fps=${FPS},setsar=1,format=yuv420p[v${i}]`
       );
     } else {

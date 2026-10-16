@@ -14,6 +14,34 @@ Tell it your dream in the morning. It paints five pictures and plays them back a
 
 Visitors get an instant anonymous account, so there's no sign-up wall.
 
+## Dream Director (cinematic films, `dream-director-v2`)
+
+New dreams go through the Dream Director when it is switched on (see "Setting up Dream Director" below):
+
+1. **Understand** — GPT turns the spoken dream into a *DreamBible*: characters, places and objects with fixed IDs and locked descriptions, the order of events, and continuity rules. The original words are stored untouched. (`lib/director/bible.js`)
+2. **Storyboard** — 3 shots (free) or 5 (Premium), one motion idea per shot, with plain "remembered" narration. Over-written lines are swapped for the dreamer's own words. (`lib/director/storyboard.js`)
+3. **References** — one reference image per character, place and object (fal `nano-banana`).
+4. **Keyframes** — each shot's first frame is made *from* those reference images (`nano-banana/edit`), which keeps the same person, outfit, place and objects across shots. (`lib/director/compiler.js`)
+5. **Animate** — each keyframe becomes a real 5-second video clip (Kling 2.5 Turbo Pro image-to-video). Only a failed shot is retried, up to 3 tries. (`lib/providers/index.js`)
+6. **Voice, edit, check** — narration, music and captions are cut together. Clips that are broken, black, frozen or too short are rejected. (`lib/cinema/*`)
+
+If fewer than about 60% of the shots come back as good video, the film is made from the keyframes instead and labelled `image_fallback`. Each film records its `renderer_type` and `generation_version`.
+
+### Setting up Dream Director
+1. Run `supabase/migrations/20261017_dream_director.sql` in Supabase → SQL Editor.
+2. In Vercel, add `SUPABASE_SERVICE_ROLE_KEY` and `REEL_WORKER_SECRET` (any random text of 32+ characters), and check that `NEXT_PUBLIC_SITE_URL` is set. Then redeploy.
+
+### Access (all decided on the server in `lib/entitlements.js`)
+| | Free | Premium |
+|---|---|---|
+| Dream Reels | 1 per day (UK calendar day) | 3 per day |
+| Shots per film | 3 | 5 |
+| Download MP4 | No (watch in app only) | Yes |
+| Share | Link to the dream page (`FREE_SHARE_MODE`) | Video file (`PREMIUM_SHARE_MODE`) |
+| Dream Guru | Locked preview | Yes |
+
+A film that fails gives the day's slot back, at most twice a day.
+
 ## Dream Reel films (shareable video)
 After a dream is painted, its owner's page automatically makes a **film**: a 1080×1920 MP4 (15–35 s) for TikTok, Reels and Shorts.
 1. A short, faithful narration is written (one line per scene) and read aloud (OpenAI).

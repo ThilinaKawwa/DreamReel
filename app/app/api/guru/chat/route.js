@@ -1,5 +1,9 @@
 import OpenAI from 'openai';
-import { json, requireUser, getProfile, isPremium } from '@/lib/server';
+import { json, requireUser, getProfile } from '@/lib/server';
+import { logEvent } from '@/lib/analytics-server';
+import { underLimit } from '@/lib/ratelimit';
+import { expressionFor } from '@/lib/guru-expression';
+import { getEntitlements } from '@/lib/entitlements';
 import {
   GURU_MODEL, GURU_DAILY_MESSAGES, chatSystemPrompt, dreamNotes, memoryNotes, loadMemory,
   tradition, speak, plainForSpeech,
@@ -18,8 +22,9 @@ export async function POST(req) {
   if (!auth) return json({ error: 'Not signed in.' }, 401);
   const { user, supabase } = auth;
 
+  // Access is decided on the server from the plan the Stripe webhook wrote — never from the request.
+  if (!(await getEntitlements(supabase, user.id)).canUseGuru) return json({ error: 'The Guru is part of Premium.', upgrade: true }, 402);
   const profile = await getProfile(supabase, user.id);
-  if (!isPremium(profile)) return json({ error: 'The Guru is part of Premium.', upgrade: true }, 402);
 
   const form = await req.formData();
   const dreamId = String(form.get('dreamId') || '');
@@ -27,6 +32,8 @@ export async function POST(req) {
   const audio = form.get('audio');
   const viaVoice = Boolean(audio && typeof audio === 'object' && audio.size > 0);
   const wantsAudio = viaVoice || form.get('speak') === '1';
+
+  if (!(await underLimit(user.id, 'guruChat'))) return json({ error: 'Let’s pause for a little while — you can ask again soon.' }, 429);
 
   // Fair-use cap per day
   const since = new Date(Date.now() - 24 * 3600 * 1000).toISOString();
@@ -113,5 +120,7 @@ export async function POST(req) {
     }
   }
 
-  return json({ question, answer, messageId: saved?.id || null, audio: audioB64 });
+  // Behaviour only — never the question or the answer.
+  await logEvent(supabase, user.id, 'guru_response_completed', { voice: viaVoice, spoken: Boolean(audioB64) });
+  return json({ question, answer, messageId: saved?.id || null, audio: audioB64, expression: expressionFor(answer) });
 }

@@ -1,5 +1,6 @@
 // Unit tests for the Dream Reel film pipeline. Run: npm test
 import test from 'node:test';
+import { readFileSync } from 'node:fs';
 import assert from 'node:assert/strict';
 import { planTimeline, CROSSFADE, END_CARD, SILENT_SCENE } from '../lib/reel/timeline.js';
 import { buildAss, assText } from '../lib/reel/captions.js';
@@ -74,7 +75,10 @@ test('analytics: only behaviour is recorded, never dream text', () => {
   const p = safeProps({ seconds: 27.123456, method: 'file', ok: true, transcript: 'I dreamt of my ex', 'Bad Key': 1, nested: { a: 1 } });
   assert.deepEqual(p, { seconds: 27.123, method: 'file', ok: true });
   assert.ok(EVENTS.includes('video_shared'));
-  assert.equal(EVENTS.length, 19);
+  // The app's list and the database's allowed list (latest migration) must match exactly.
+  const sql = readFileSync(new URL('../supabase/migrations/20261017_dream_director.sql', import.meta.url), 'utf8');
+  const allowed = sql.slice(sql.lastIndexOf('check (event in (')).match(/'([a-z_]+)'/g).map((x) => x.slice(1, -1));
+  assert.deepEqual([...allowed].sort(), [...EVENTS].sort());
 });
 
 test('filenames are tidy and safe', () => {

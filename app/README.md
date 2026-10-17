@@ -18,7 +18,7 @@ Visitors get an instant anonymous account, so there's no sign-up wall.
 
 1. **Understand**: GPT turns the spoken dream into a *DreamBible*. It records characters, places and objects with fixed IDs and locked descriptions, the order of events, and continuity rules. The original words are stored untouched.
 2. **Storyboard**: 3 shots on the free trial, 5 on Premium. Each shot has one motion idea and plain "remembered" narration; over-written lines are replaced with the dreamer's own words.
-3. **Reference pack**: a front view for every on-screen character. Characters in 2 or more shots also get a three-quarter view, made *from* the front view. Places and objects that appear in 2 or more shots get one reference each (`lib/director/routing.js`).
+3. **Reference pack**: a front view for every on-screen character. Characters in 2 or more shots also get a three-quarter view, made *from* the front view. Places that appear in 2 or more shots get one reference. Objects that appear in 2 or more shots get a front view plus a second angle made from it, because a Kling O1 identity element needs a front image and at least one more reference (`lib/director/routing.js`).
 4. **Keyframes**: each shot's first frame is made *from* those references (`nano-banana/edit`).
 5. **Video, routed per shot**:
    - Shots with a recurring person or object use **Kling O1 reference-to-video**, which takes the character pack as identity "elements".

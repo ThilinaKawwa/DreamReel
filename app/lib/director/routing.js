@@ -23,7 +23,9 @@ export function usage(storyboard) {
  * The smallest useful set of canonical references:
  *   every on-screen character → front view; recurring characters → + three-quarter view
  *   recurring locations (2+ shots) → one establishing reference
- *   recurring objects (2+ shots) → one reference
+ *   recurring objects (2+ shots) → front + one second angle (made from the front)
+ * Identity elements for Kling O1 need a frontal image AND 1–3 additional references, so
+ * every recurring person or object gets a second view derived from its canonical front.
  * One-off places/objects are described in the keyframe prompt instead (saves calls).
  */
 export function referencePlan(bible, storyboard) {
@@ -35,8 +37,17 @@ export function referencePlan(bible, storyboard) {
     if (u.character[c.id] >= 2) plan.push({ key: `character:${c.id}:three_quarter`, kind: 'character', id: c.id, view: 'three_quarter', from: `character:${c.id}` });
   }
   for (const l of bible.locations) if ((u.location[l.id] || 0) >= 2) plan.push({ key: `location:${l.id}`, kind: 'location', id: l.id, view: 'front' });
-  for (const o of bible.objects) if ((u.object[o.id] || 0) >= 2) plan.push({ key: `object:${o.id}`, kind: 'object', id: o.id, view: 'front' });
+  for (const o of bible.objects) {
+    if ((u.object[o.id] || 0) < 2) continue;
+    plan.push({ key: `object:${o.id}`, kind: 'object', id: o.id, view: 'front' });
+    plan.push({ key: `object:${o.id}:alt`, kind: 'object', id: o.id, view: 'alt', from: `object:${o.id}` });
+  }
   return plan;
+}
+
+/** The additional-reference key for an identity element (character three-quarter / object second angle). */
+export function secondaryKey(key) {
+  return key.startsWith('character:') ? `${key}:three_quarter` : `${key}:alt`;
 }
 
 /** Video mode for one shot: 'identity' (reference-conditioned) or 'scenic' (first-frame i2v). */

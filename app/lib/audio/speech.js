@@ -1,14 +1,13 @@
 // SpeechProvider: text → spoken WAV. Used for film narration and for Orin's voice.
 //
-// Default model gpt-realtime-2.1-mini is OpenAI's named replacement for the deprecated
-// gpt-4o-mini-tts, but it is NOT available on /v1/audio/speech — only on the Realtime API.
-// So this is the smallest safe adapter: one short server-side Realtime WebSocket session per
-// line ("read this exactly"), collect the PCM audio, wrap it as WAV. No streaming to the
-// browser, no live conversation — callers still get { wav, seconds } like before.
+// Preferred path: the ordinary /v1/audio/speech endpoint with TTS_MODEL (default
+// gpt-realtime-2.1-mini, OpenAI's named replacement for the deprecated gpt-4o-mini-tts).
+// Narration lines and Guru replies are short, bounded texts — no live session is needed.
 //
-// Because a realtime model is a conversational model, we check that what it SAID matches
-// what we asked it to read (its own transcript). If it paraphrases, fails or times out, the
-// line is spoken by the fallback /v1/audio/speech model instead (while that exists).
+// Contingency path, used ONLY if OpenAI rejects the model on /v1/audio/speech: a minimal
+// server-side Realtime WebSocket session per line ("read this exactly"), PCM → WAV, with a
+// check that the spoken words match the text. Which path ran is returned with every result
+// (transport, fallbackUsed) and recorded by the callers, so reliability can be measured.
 import { models, isRealtimeModel } from '../models.js';
 import { pcm16ToWav, wavSeconds } from './wav.js';
 
@@ -94,18 +93,59 @@ export function realtimeSpeak({ apiKey, model, voice, style, text, WebSocketImpl
   });
 }
 
+// A model the speech endpoint has rejected (per server process), so we don't retry a known failure.
+const speechEndpointRejects = new Set();
+
+/** True when an API error means "this model can't be used on this endpoint" (not a content/audio problem). */
+export function isModelUnsupported(e) {
+  const m = String(e?.message || e?.error?.message || '');
+  return (e?.status === 400 || e?.status === 404 || e?.status === 403)
+    && /model|endpoint/i.test(m) && /not (supported|found|exist|available|allowed)|does not (exist|support)|unsupported|invalid model|do not have access/i.test(m);
+}
+
 /**
- * @param {import('openai').default} openai
- * @returns {{ model: string, speak(text: string, opts: {voice?: string, style?: string}): Promise<{wav: Buffer, seconds: number, model: string, verbatim: number|null}> }}
+ * SpeechProvider. Order of attempts for TTS_MODEL:
+ *   1. /v1/audio/speech            — the simple path (preferred whenever OpenAI accepts the model)
+ *   2. Realtime adapter            — only if (1) rejects the model AND the model is a realtime model
+ *   3. TTS_FALLBACK_MODEL on (1)   — temporary emergency fallback; every use is recorded
+ * TTS_TRANSPORT=speech|realtime forces one transport (default: auto = the order above).
+ * @returns {{ model: string, speak(text, opts): Promise<{wav, seconds, model, provider, transport, fallbackUsed, verbatim}> }}
  */
 export function speechProvider(openai, env = process.env, deps = {}) {
   const m = models(env);
+  const transport = env.TTS_TRANSPORT || 'auto';
   const minVerbatim = Number(env.TTS_MIN_VERBATIM || 0.8);
 
   async function viaSpeechEndpoint(model, text, voice, style) {
     const res = await openai.audio.speech.create({ model, voice, input: text.slice(0, 4000), instructions: style, response_format: 'wav' });
     const wav = Buffer.from(await res.arrayBuffer());
-    return { wav, seconds: wavSeconds(wav), model, verbatim: null };
+    const seconds = wavSeconds(wav);
+    if (!seconds) throw new Error('speech endpoint returned no usable audio');
+    return { wav, seconds, model, provider: 'openai', transport: 'speech', verbatim: null };
+  }
+
+  async function viaRealtime(text, voice, style) {
+    const out = await (deps.realtimeSpeak || realtimeSpeak)({
+      apiKey: env.OPENAI_API_KEY || openai.apiKey, model: m.tts, voice, style, text, WebSocketImpl: deps.WebSocketImpl,
+    });
+    const score = out.transcript ? verbatimScore(text, out.transcript) : null;
+    if (score !== null && score < minVerbatim) throw new Error(`realtime did not read the text verbatim (score ${score.toFixed(2)})`);
+    return { wav: out.wav, seconds: wavSeconds(out.wav), model: m.tts, provider: 'openai', transport: 'realtime', verbatim: score };
+  }
+
+  async function primary(line, voice, style) {
+    const tryRealtime = transport === 'realtime' || (transport === 'auto' && isRealtimeModel(m.tts));
+    if (transport !== 'realtime' && !speechEndpointRejects.has(m.tts)) {
+      try {
+        return await viaSpeechEndpoint(m.tts, line, voice, style);
+      } catch (e) {
+        if (!(tryRealtime && isModelUnsupported(e))) throw e;
+        speechEndpointRejects.add(m.tts);
+        console.warn(`/v1/audio/speech rejected ${m.tts} (${e.message}); using the Realtime adapter`);
+      }
+    }
+    if (tryRealtime) return viaRealtime(line, voice, style);
+    throw new Error(`${m.tts} is not usable on /v1/audio/speech`);
   }
 
   return {
@@ -113,21 +153,16 @@ export function speechProvider(openai, env = process.env, deps = {}) {
     async speak(text, { voice = m.narratorVoice, style = '' } = {}) {
       const line = String(text || '').trim().slice(0, 4000);
       if (!line) throw new Error('nothing to say');
-      if (isRealtimeModel(m.tts)) {
-        try {
-          const out = await (deps.realtimeSpeak || realtimeSpeak)({
-            apiKey: env.OPENAI_API_KEY || openai.apiKey, model: m.tts, voice, style, text: line, WebSocketImpl: deps.WebSocketImpl,
-          });
-          const score = out.transcript ? verbatimScore(line, out.transcript) : null;
-          if (score === null || score >= minVerbatim) return { wav: out.wav, seconds: wavSeconds(out.wav), model: m.tts, verbatim: score };
-          throw new Error(`realtime did not read the text verbatim (score ${score.toFixed(2)})`);
-        } catch (e) {
-          if (!m.ttsFallback) throw e;
-          console.error(`speech via ${m.tts} failed (${e.message}); using ${m.ttsFallback}`);
-          return viaSpeechEndpoint(m.ttsFallback, line, voice, style);
-        }
+      try {
+        return { ...(await primary(line, voice, style)), fallbackUsed: false };
+      } catch (e) {
+        if (!m.ttsFallback) throw e;
+        console.error(`TTS fallback used: ${m.tts} failed (${e.message}); speaking with ${m.ttsFallback}`);
+        return { ...(await viaSpeechEndpoint(m.ttsFallback, line, voice, style)), fallbackUsed: true, primaryError: String(e.message).slice(0, 160) };
       }
-      return viaSpeechEndpoint(m.tts, line, voice, style);
     },
   };
 }
+
+/** Test hook: forget remembered endpoint rejections. */
+export function _resetSpeechMemo() { speechEndpointRejects.clear(); }

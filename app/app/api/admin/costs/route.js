@@ -1,14 +1,11 @@
 import { json, requireUser, getServiceSupabase } from '@/lib/server';
+import { isAdmin } from '@/lib/admin';
 import { MEDIA_BUCKET } from '@/lib/cinema/media';
 
 export const runtime = 'nodejs';
 
 // Internal cost/quality diagnostics. Only for accounts listed in ADMIN_USER_IDS (server env,
 // comma-separated Supabase user ids). Everyone else gets a 404. Never returns dream text.
-function isAdmin(userId) {
-  return String(process.env.ADMIN_USER_IDS || '').split(',').map((s) => s.trim()).filter(Boolean).includes(userId);
-}
-
 export async function GET(req) {
   const auth = await requireUser(req);
   if (!auth || !isAdmin(auth.user.id)) return json({ error: 'Not found.' }, 404);

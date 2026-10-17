@@ -142,10 +142,9 @@ export async function loadMemory(supabase, userId, excludeDreamId, limit = 15) {
   return data || [];
 }
 
-/** Text → speech in Orin's fixed voice. Returns a WAV Buffer (see lib/audio/speech.js). */
+/** Text → speech in Orin's fixed voice. Returns { wav, provider, model, transport, fallbackUsed }. */
 export async function speak(openai, text, { voice = GURU_VOICE, style = GURU_VOICE_STYLE } = {}) {
-  const out = await speechProvider(openai).speak(text.slice(0, 4000), { voice, style });
-  return out.wav;
+  return speechProvider(openai).speak(text.slice(0, 4000), { voice, style });
 }
 
 /** Strips markdown so a written answer reads naturally when spoken. */

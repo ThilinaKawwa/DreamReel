@@ -114,16 +114,22 @@ export async function POST(req) {
   if (qErr || aErr) console.error('saving guru messages failed', qErr || aErr);
 
   let audioB64 = null;
+  let tts = null;
   if (wantsAudio) {
     try {
-      audioB64 = (await speak(openai, plainForSpeech(answer))).toString('base64');
+      tts = await speak(openai, plainForSpeech(answer));
+      audioB64 = tts.wav.toString('base64');
     } catch (e) {
       console.error('guru speech failed', e?.message || e);
     }
   }
 
   // Behaviour only — never the question or the answer.
-  await logEvent(supabase, user.id, 'guru_response_completed', { voice: viaVoice, spoken: Boolean(audioB64) });
+  // Behaviour + which voice path ran (to measure TTS reliability) — never the text.
+  await logEvent(supabase, user.id, 'guru_response_completed', {
+    voice: viaVoice, spoken: Boolean(audioB64),
+    ...(tts ? { tts_model: tts.model, tts_transport: tts.transport, tts_fallback_used: Boolean(tts.fallbackUsed) } : {}),
+  });
   if (viaVoice) await logEvent(supabase, user.id, 'guru_voice_started', {});
   return json({ question, answer, messageId: saved?.id || null, audio: audioB64, audioType: 'audio/wav', expression: expression || expressionFor(answer) });
 }

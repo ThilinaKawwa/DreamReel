@@ -8,10 +8,11 @@ export function models(env = process.env) {
     // Speech → text. gpt-transcribe replaces the deprecated gpt-4o-mini-transcribe.
     transcription: env.TRANSCRIPTION_MODEL || 'gpt-transcribe',
     transcriptionFallback: env.TRANSCRIPTION_FALLBACK_MODEL || '', // off by default (same endpoint, low risk)
-    // Text → speech. gpt-realtime-2.1-mini (OpenAI's named replacement for the deprecated
-    // gpt-4o-mini-tts) only works through the Realtime API, so lib/audio/speech.js uses a
-    // small Realtime adapter. The fallback uses /v1/audio/speech until OpenAI removes it
-    // (announced for 2027-01-06); set TTS_FALLBACK_MODEL= (empty) to turn it off.
+    // Text → speech. gpt-realtime-2.1-mini is OpenAI's named replacement for the deprecated
+    // gpt-4o-mini-tts. lib/audio/speech.js calls the standard /v1/audio/speech endpoint first and
+    // only uses its small Realtime adapter if OpenAI rejects the model there. The fallback model
+    // is a TEMPORARY emergency path (OpenAI removes it 2027-01-06); every use is recorded.
+    // Set TTS_FALLBACK_MODEL= (empty) to turn it off.
     tts: env.TTS_MODEL || 'gpt-realtime-2.1-mini',
     ttsFallback: env.TTS_FALLBACK_MODEL ?? 'gpt-4o-mini-tts',
     narratorVoice: env.NARRATOR_VOICE || 'marin',

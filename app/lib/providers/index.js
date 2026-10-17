@@ -60,7 +60,8 @@ export const VIDEO_ADAPTERS = {
   // Identity shots: Kling O1 Reference image-to-video (fal schema confirmed 2026-10-16):
   //   image_urls: [start frame]          → referenced in the prompt as @Image1
   //   elements: [{ frontal_image_url, reference_image_urls[] }] → @Element1, @Element2 …
-  //   at most 7 inputs in total across start frame + every frontal + every reference image
+  //   each element: frontal_image_url (required) + reference_image_urls (1–3)
+  //   at most 7 inputs: start image + elements + any extra top-level images
   //   duration "5", aspect_ratio "9:16"
   'kling-o1-ref': {
     model: 'fal-ai/kling-video/o1/reference-to-video',
@@ -69,20 +70,35 @@ export const VIDEO_ADAPTERS = {
   },
 };
 
-export const O1_MAX_INPUTS = 7;
+export const O1_MAX_INPUTS = 7;          // start image(s) + elements + top-level images (fal docs)
+export const O1_MAX_ELEMENT_REFERENCES = 3; // reference_image_urls per element: 1–3
+
+/** An element is valid only with a frontal image AND 1–3 additional reference images. Pure. */
+export function validO1Element(e) {
+  return Boolean(e && e.frontal && Array.isArray(e.references) && e.references.filter(Boolean).length >= 1);
+}
+
+/**
+ * Inputs as fal counts them: each top-level image (start frame + any image_urls) and each
+ * element counts ONE — an element's own frontal/reference images do not count separately.
+ */
+export function o1InputCount(body) {
+  return (body.image_urls?.length || 0) + (body.elements?.length || 0);
+}
 
 /**
  * Builds the Kling O1 Reference request. Pure (tested in test/audio-o1.test.mjs).
- * Keeps within 7 inputs: extra reference angles are dropped first, then extra elements.
+ * - Elements without a valid reference pack are never sent (no empty reference arrays).
+ * - Each element keeps at most 3 additional references.
+ * - If start image + elements would exceed 7, the LAST (lowest-priority) elements are dropped;
+ *   callers pass elements in priority order (recurring people first, then objects).
  */
 export function o1Input({ startImageUrl, prompt, duration, elements = [] }) {
-  let els = elements.filter((e) => e && e.frontal).map((e) => ({ ...e, references: (e.references || []).filter(Boolean) }));
-  const count = () => 1 + els.reduce((n, e) => n + 1 + e.references.length, 0);
-  while (count() > O1_MAX_INPUTS && els.some((e) => e.references.length)) {
-    const widest = els.reduce((a, b) => (b.references.length > a.references.length ? b : a));
-    widest.references = widest.references.slice(0, -1);
-  }
-  while (count() > O1_MAX_INPUTS) els = els.slice(0, -1);
+  const maxElements = O1_MAX_INPUTS - 1;
+  const els = elements
+    .map((e) => e && { ...e, references: (e.references || []).filter(Boolean).slice(0, O1_MAX_ELEMENT_REFERENCES) })
+    .filter(validO1Element)
+    .slice(0, maxElements);
   return {
     prompt: [
       '@Image1 is the opening frame of this shot; start exactly from it.',

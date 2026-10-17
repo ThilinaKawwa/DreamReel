@@ -13,8 +13,8 @@ import path from 'node:path';
 import { DIRECTOR_VERSION, BIBLE_PROMPT_VERSION, buildDreamBible } from '@/lib/director/bible';
 import { STORYBOARD_PROMPT_VERSION, buildStoryboard } from '@/lib/director/storyboard';
 import { COMPILER_VERSION, referencePrompt, keyframeRequest, videoRequest } from '@/lib/director/compiler';
-import { referencePlan, routeShot } from '@/lib/director/routing';
-import { imageProvider, videoProvider } from '@/lib/providers';
+import { referencePlan, routeShot, secondaryKey } from '@/lib/director/routing';
+import { imageProvider, videoProvider, validO1Element } from '@/lib/providers';
 import { accessPlans, refundCredit } from '@/lib/entitlements';
 import { speakLine } from '@/lib/reel/voice';
 import { renderReel } from '@/lib/reel/render';
@@ -259,8 +259,14 @@ export async function advanceProduction(admin, dreamId, deadline) {
         if (!spoken) { failed.push(s.id); return; }
         try {
           const vp = await storeBytes(admin, own(`voice-${s.id}.wav`), spoken.wav, 'audio/wav');
-          assets.voice[s.id] = { path: vp, seconds: spoken.seconds, model: spoken.model };
-          addCost('tts', { provider: 'openai', model: spoken.model, unit: 'audio minute (est.)', quantity: spoken.seconds / 60, unitPrice: UNIT.ttsPerMinute });
+          assets.voice[s.id] = {
+            path: vp, seconds: spoken.seconds,
+            tts_provider: spoken.provider, tts_model: spoken.model, tts_transport: spoken.transport, tts_fallback_used: Boolean(spoken.fallbackUsed),
+          };
+          addCost('tts', {
+            provider: spoken.provider || 'openai', model: spoken.model, unit: 'audio minute (est.)', quantity: spoken.seconds / 60, unitPrice: UNIT.ttsPerMinute,
+            extra: { tts_transport: spoken.transport, tts_fallback_used: Boolean(spoken.fallbackUsed) },
+          });
         } catch { failed.push(s.id); }
       }));
       assets.voiceFailed = failed;
@@ -316,7 +322,10 @@ async function submitShot(admin, { p, bible, storyboard, shot, assets, own, retr
   const route = routeShot(storyboard, shot);
   const vr = videoRequest(bible, shot);
   // Identity shots need their canonical references; if those failed, use the scenic mode.
-  const elements = route.identityKeys.filter((k) => assets.references[k]?.path);
+  // Only entities with a complete reference pack (front + second view) become O1 elements;
+  // anything else is described in the prompt instead of being sent as an invalid element.
+  const elements = route.identityKeys.filter((k) => assets.references[k]?.path && assets.references[secondaryKey(k)]?.path);
+  const elementsDropped = route.identityKeys.filter((k) => !elements.includes(k));
   const mode = route.mode === 'identity' && elements.length ? 'identity' : 'scenic';
   const video = videoProvider(mode === 'identity' ? route.provider : models().scenicVideo);
   const shotCost = video.costPerSecond * vr.duration;
@@ -330,12 +339,14 @@ async function submitShot(admin, { p, bible, storyboard, shot, assets, own, retr
     const startImageUrl = await signedUrl(admin, assets.keyframes[shot.id].path, PROVIDER_LINK_SECONDS);
     const els = mode === 'identity' ? await Promise.all(elements.map(async (k) => {
       const frontal = await signedUrl(admin, assets.references[k].path, PROVIDER_LINK_SECONDS);
-      const tq = assets.references[`${k}:three_quarter`]?.path;
-      const extra = tq ? await signedUrl(admin, tq, PROVIDER_LINK_SECONDS) : null;
-      return { label: vr.labels?.[k] || k.split(':')[1], frontal, references: extra ? [extra] : [] };
+      const extra = await signedUrl(admin, assets.references[secondaryKey(k)].path, PROVIDER_LINK_SECONDS);
+      return { label: vr.labels?.[k] || k.split(':')[1], frontal, references: [extra] };
     })) : [];
-    const { requestId } = await video.submit({ startImageUrl, prompt: vr.prompt, negative: vr.negative, duration: vr.duration, elements: els });
-    return { cost: shotCost, seconds: vr.duration, perSecond: video.costPerSecond, record: { status: 'pending', requestId, mode, provider: video.id, model: video.model, submittedAt: now(), error: null } };
+    // If signing failed for every element, never send an element-less identity request.
+    const validEls = els.filter(validO1Element);
+    if (mode === 'identity' && !validEls.length) throw new Error('no valid identity references could be signed');
+    const { requestId } = await video.submit({ startImageUrl, prompt: vr.prompt, negative: vr.negative, duration: vr.duration, elements: validEls });
+    return { cost: shotCost, seconds: vr.duration, perSecond: video.costPerSecond, record: { status: 'pending', requestId, mode, provider: video.id, model: video.model, elements: elements.length, elementsDropped, submittedAt: now(), error: null } };
   } catch (e) {
     return { record: { status: 'failed', error: String(e.message).slice(0, 160), mode, provider: video.id, model: video.model } };
   }

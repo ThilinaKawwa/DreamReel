@@ -41,6 +41,9 @@ export function referencePrompt(bible, ref) {
     return `Establishing wide shot of ${l.name}: ${locationLock(l)}. No people. Vertical 9:16 composition. ${s}. No text.`;
   }
   const o = bible.objects.find((x) => x.id === ref.id);
+  if (ref.view === 'alt') {
+    return `The SAME object as in Image 1 — identical shape, size, material, colour and every detail (${o.description}). Seen from a different angle, about 45 degrees to the side, isolated on a plain neutral background, soft light, sharp detail. No text.`;
+  }
   return `Close reference photo of ${o.name}: ${o.description}. Isolated on a plain neutral background, soft light, sharp detail. ${s}. No text.`;
 }
 

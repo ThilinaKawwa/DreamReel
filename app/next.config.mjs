@@ -15,6 +15,7 @@ const nextConfig = {
   outputFileTracingIncludes: {
     '/api/dreams/\\[id\\]/reel': RENDER_FILES,
     '/api/internal/production': RENDER_FILES,
+    '/api/admin/contract-test': [...RENDER_FILES, './public/orin.jpg', './public/orin-avatar-256.jpg'],
   },
 };
 

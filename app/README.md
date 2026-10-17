@@ -72,8 +72,10 @@ The list prices used are Kling 2.5 Turbo Pro $0.07/s, Kling O1 reference $0.112/
 | Job | Model | How it's called |
 |---|---|---|
 | Recording → text | `gpt-transcribe` | `/v1/audio/transcriptions` (same as before) |
-| Narration and Orin's voice | `gpt-realtime-2.1-mini` | a short server-side Realtime WebSocket session per line, returning WAV; the spoken transcript is checked against the text |
-| Fallback speech | `gpt-4o-mini-tts` | `/v1/audio/speech`, only if a Realtime line fails or isn't read word-for-word. OpenAI removes it on 2027-01-06. Set `TTS_FALLBACK_MODEL=` (empty) to turn it off. |
+| Narration and Orin's voice | `gpt-realtime-2.1-mini` | `/v1/audio/speech` (WAV). Only if OpenAI rejects the model there: a short server-side Realtime session per line, with a word-for-word check. `TTS_TRANSPORT=speech\|realtime` forces one path. |
+| Temporary fallback | `gpt-4o-mini-tts` | `/v1/audio/speech`, only if the main path fails. Every use is recorded (`tts_fallback_used` on each narration line and Guru reply). OpenAI removes it on 2027-01-06. |
+
+**Provider contract test (admins):** open `/admin/contract-test` while signed in as an `ADMIN_USER_IDS` account. It runs one speech + one transcription request (~$0.01) and one 5-second Kling O1 clip (~$0.56) and shows the raw results.
 
 ## Dream Reel films (shareable video)
 After a dream is painted, its owner's page automatically makes a **film**: a 1080×1920 MP4 (15–35 s) for TikTok, Reels and Shorts.

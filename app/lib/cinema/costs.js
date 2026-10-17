@@ -29,8 +29,8 @@ export function units(env = process.env) {
 export const UNIT = units();
 
 /** One line of the admin cost report. */
-export function usageLine({ part, provider, model, unit, quantity, unitPrice }) {
-  return { part, provider, model, unit, quantity: round(quantity), unit_price_usd: unitPrice, usd: round(quantity * unitPrice) };
+export function usageLine({ part, provider, model, unit, quantity, unitPrice, extra }) {
+  return { part, provider, model, unit, quantity: round(quantity), unit_price_usd: unitPrice, usd: round(quantity * unitPrice), ...(extra || {}) };
 }
 
 /**

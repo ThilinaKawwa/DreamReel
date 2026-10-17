@@ -26,8 +26,9 @@ export async function POST(req) {
 
   try {
     const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-    const wav = await speak(openai, plainForSpeech(text));
-    return new Response(wav, { headers: { 'content-type': 'audio/wav', 'cache-control': 'private, max-age=86400' } });
+    const out = await speak(openai, plainForSpeech(text));
+    if (out.fallbackUsed) console.warn('guru speak: TTS fallback used', out.model);
+    return new Response(out.wav, { headers: { 'content-type': 'audio/wav', 'cache-control': 'private, max-age=86400' } });
   } catch (e) {
     console.error('speak failed', e?.message || e);
     return json({ error: 'Could not find his voice just now.' }, 502);

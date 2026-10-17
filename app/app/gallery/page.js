@@ -2,7 +2,8 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { ensureSession, getBrowserSupabase } from '@/lib/supabase';
-import { DreamTile } from '@/components/DreamCard';
+import { DreamTile, loadReels, withCovers } from '@/components/DreamCard';
+import { track } from '@/lib/analytics';
 import { STYLES } from '@/lib/styles';
 
 const FILTERS = [
@@ -15,7 +16,7 @@ export default function Gallery() {
   const [dreams, setDreams] = useState(null);
   const [q, setQ] = useState('');
   const [filter, setFilter] = useState('all');
-  const [toast, setToast] = useState('');
+  const [reels, setReels] = useState({});
 
   useEffect(() => {
     (async () => {
@@ -27,6 +28,9 @@ export default function Gallery() {
         .order('created_at', { ascending: false })
         .limit(100);
       setDreams(data || []);
+      withCovers(data || []).then(setDreams).catch(() => {});
+      track('gallery_opened', { dreams: (data || []).length }, { onceKey: 'gallery' });
+      setReels(await loadReels(getBrowserSupabase(), (data || []).map((d) => d.id)));
     })().catch(() => setDreams([]));
   }, []);
 
@@ -39,12 +43,6 @@ export default function Gallery() {
     if (s) list = list.filter((d) => (d.title || '').toLowerCase().includes(s) || (d.transcript || '').toLowerCase().includes(s) || (d.scenes || []).some((sc) => (sc.caption || '').toLowerCase().includes(s)));
     return list;
   }, [dreams, q, filter]);
-
-  async function share(d) {
-    const url = `${window.location.origin}/d/${d.id}`;
-    if (navigator.share) { try { await navigator.share({ title: 'Dream Reel', text: `${d.title || 'My dream'} 🌙`, url }); } catch {} }
-    else { await navigator.clipboard.writeText(url); setToast('Link copied'); setTimeout(() => setToast(''), 1800); }
-  }
 
   return (
     <main className="app">
@@ -82,10 +80,9 @@ export default function Gallery() {
       )}
       {shown.length > 0 && (
         <div className="grid">
-          {shown.map((d) => <DreamTile key={d.id} dream={d} onShare={share} />)}
+          {shown.map((d) => <DreamTile key={d.id} dream={d} reel={reels[d.id]} />)}
         </div>
       )}
-      <div className={`toast ${toast ? 'on' : ''}`}>{toast}</div>
     </main>
   );
 }

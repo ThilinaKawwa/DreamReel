@@ -4,11 +4,15 @@ import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { ensureSession } from '@/lib/supabase';
 import { STYLES, DEFAULT_STYLE } from '@/lib/styles';
+import { track } from '@/lib/analytics';
+import { startPremium } from '@/lib/api';
 
 const MAX_SECS = 30;
 const BARS = 14;
 const BAR_COLORS = ['#22d3ee', '#7c5cff', '#d946ef', '#7c5cff', '#22d3ee', '#f5b544', '#d946ef', '#7c5cff', '#22d3ee', '#7c5cff', '#d946ef', '#f5b544', '#22d3ee', '#7c5cff'];
-const STEPS = ['Listening to your dream', 'Finding the scenes', 'Painting the pictures', 'Adding movement', 'Almost there'];
+// Gentle words while the server works. They rotate, but never claim a step is done —
+// the request below is the only real signal of progress.
+const HINTS = ['Listening to your dream…', 'Writing down what you said…', 'Holding on to the details…'];
 
 function pickMimeType() {
   if (typeof MediaRecorder === 'undefined') return null;
@@ -24,7 +28,8 @@ export default function Recorder() {
   const [live, setLive] = useState('');
   const [style, setStyle] = useState(DEFAULT_STYLE);
   const [error, setError] = useState('');
-  const [step, setStep] = useState(0);
+  const [canUpgrade, setCanUpgrade] = useState(false);
+  const [hint, setHint] = useState(0);
   const [levels, setLevels] = useState(Array(BARS).fill(0.15));
   const recRef = useRef(null);
   const chunksRef = useRef([]);
@@ -59,6 +64,7 @@ export default function Recorder() {
       rec.ondataavailable = (e) => { if (e.data.size > 0) chunksRef.current.push(e.data); };
       rec.onstop = () => {
         blobRef.current = new Blob(chunksRef.current, { type: rec.mimeType || 'audio/webm' });
+        track('recording_completed', { kb: Math.round(blobRef.current.size / 1024) });
         stream.getTracks().forEach((t) => t.stop());
         setPhase('review');
       };
@@ -96,6 +102,7 @@ export default function Recorder() {
       } catch {}
 
       setSecs(0); setPhase('recording');
+      track('recording_started');
       timerRef.current = setInterval(() => {
         setSecs((s) => { if (s + 1 >= MAX_SECS) { stopRecording(); return MAX_SECS; } return s + 1; });
       }, 1000);
@@ -115,8 +122,9 @@ export default function Recorder() {
     const typed = text.trim();
     const blob = blobRef.current;
     if (!blob && typed.length < 8) return;
-    setPhase('making'); setStep(0);
-    const ticker = setInterval(() => setStep((s) => Math.min(s + 1, STEPS.length - 1)), 6000);
+    setPhase('making'); setHint(0);
+    track('dream_submitted', { method: blob ? 'voice' : 'text' });
+    const ticker = setInterval(() => setHint((h) => (h + 1) % HINTS.length), 4500);
     try {
       const session = await ensureSession();
       const form = new FormData();
@@ -127,7 +135,7 @@ export default function Recorder() {
       } else form.append('text', typed);
       const res = await fetch('/api/dreams', { method: 'POST', headers: { Authorization: `Bearer ${session.access_token}` }, body: form });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Something went wrong.');
+      if (!res.ok) { setCanUpgrade(Boolean(data.upgrade)); throw new Error(data.error || 'Something went wrong.'); }
       clearInterval(ticker);
       router.push(`/d/${data.id}?new=1`);
     } catch (e) {
@@ -144,18 +152,14 @@ export default function Recorder() {
   if (phase === 'making') {
     return (
       <main className="app">
-        <div className="create-top"><span className="pill live"><i />Painting</span><span className="eyebrow">~30 s</span></div>
+        <div className="create-top"><span className="pill live"><i />Listening</span><span className="eyebrow">a few seconds</span></div>
         <div className="making">
           <div className="orb" aria-hidden="true" />
           <div className="center">
-            <h2>Painting last night…</h2>
-            <p className="lead" style={{ marginTop: 8 }}>Keep this page open. It usually takes about half a minute.</p>
+            <h2>Understanding your dream…</h2>
+            <p className="lead" style={{ marginTop: 8 }}>Keep this page open for a moment. Then your film starts being made — you can leave while it works.</p>
           </div>
-          <div className="steps" aria-live="polite">
-            {STEPS.map((label, i) => (
-              <div key={label} className={`step ${i < step ? 'done' : i === step ? 'now' : ''}`}><i>{i < step ? '✓' : ''}</i>{label}</div>
-            ))}
-          </div>
+          <p className="center making-hint" aria-live="polite">{HINTS[hint]}</p>
         </div>
       </main>
     );
@@ -178,6 +182,11 @@ export default function Recorder() {
       </div>
 
       {error && <div className="error" role="alert">{error}</div>}
+      {error && canUpgrade && (
+        <button className="btn primary block" onClick={() => { track('upgrade_clicked', { from: 'limit' }); startPremium().catch(() => setError('Premium checkout is not available just yet.')); }}>
+          See Premium
+        </button>
+      )}
 
       <div className="wave" aria-hidden="true">
         {levels.map((l, i) => (

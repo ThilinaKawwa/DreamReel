@@ -1,7 +1,14 @@
 import OpenAI from 'openai';
+import { after } from 'next/server';
 import { fal } from '@fal-ai/client';
-import { getUserSupabase } from '@/lib/supabase';
 import { STYLES, DEFAULT_STYLE } from '@/lib/styles';
+import { json, requireUser, storeBytes } from '@/lib/server';
+import { logEvent } from '@/lib/analytics-server';
+import { submitAnimation, FREE_IMAGE_MODEL, PREMIUM_IMAGE_MODEL } from '@/lib/video';
+import { getEntitlements, claimCredit, refundCredit } from '@/lib/entitlements';
+import { underLimit } from '@/lib/ratelimit';
+import { transcriptionProvider } from '@/lib/audio/transcription';
+import { cinematicReady, createProduction, kickWorker } from '@/lib/cinema/start';
 
 // Let this function run for up to 60 seconds (painting 5 pictures takes ~15–30s).
 export const maxDuration = 60;
@@ -9,35 +16,35 @@ export const runtime = 'nodejs';
 
 const SCENE_COUNT = 5;
 
-function json(body, status = 200) {
-  return Response.json(body, { status });
-}
-
 export async function POST(req) {
   // 1. Who is asking? (the browser sends the login token)
-  const auth = req.headers.get('authorization') || '';
-  const token = auth.replace(/^Bearer\s+/i, '');
-  if (!token) return json({ error: 'Not signed in.' }, 401);
-
-  const supabase = getUserSupabase(token);
-  const { data: userData, error: userErr } = await supabase.auth.getUser(token);
-  if (userErr || !userData?.user) return json({ error: 'Not signed in.' }, 401);
-  const user = userData.user;
+  const auth = await requireUser(req);
+  if (!auth) return json({ error: 'Not signed in.' }, 401);
+  const { user, supabase } = auth;
 
   if (!process.env.OPENAI_API_KEY || !process.env.FAL_KEY) {
     return json({ error: 'The app is missing its OPENAI_API_KEY or FAL_KEY. Add them in Vercel → Settings → Environment Variables.' }, 500);
   }
 
-  // 2. Daily limit so one person can't run up the bill
-  const limit = Number(process.env.DAILY_LIMIT || 3);
-  const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-  const { count } = await supabase
-    .from('dreams')
-    .select('id', { count: 'exact', head: true })
-    .eq('user_id', user.id)
-    .gte('created_at', since);
-  if ((count || 0) >= limit) {
-    return json({ error: `You've made ${limit} dreams today. Come back tomorrow morning.` }, 429);
+  // 2. What may this person do? Decided here from trusted data — never from the browser.
+  const ent = await getEntitlements(supabase, user.id);
+  const premium = ent.plan === 'premium';
+  const cinematic = await cinematicReady();
+  if (cinematic && ent.reelsLeft === 0) {
+    return json({
+      error: premium
+        ? "You've used this month's cinematic Dream Reels. They refresh at the start of next month."
+        : "You've used your free Dream Reel. Premium makes more of them.",
+      upgrade: !premium && ent.upgradeAvailable, limit: true,
+    }, 402);
+  }
+  if (!(await underLimit(user.id, 'dream'))) return json({ error: 'Too many dreams in a short time. Please wait a little.' }, 429);
+  if (!cinematic) {
+    // Cinematic films not configured on this deployment: the older picture flow with its rolling cap.
+    const limit = Number(premium ? process.env.PREMIUM_DAILY_LIMIT || 5 : process.env.DAILY_LIMIT || 3);
+    const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    const { count } = await supabase.from('dreams').select('id', { count: 'exact', head: true }).eq('user_id', user.id).gte('created_at', since);
+    if ((count || 0) >= limit) return json({ error: `You've made ${limit} dreams today. Come back tomorrow morning.` }, 429);
   }
 
   // 3. Read what was sent: either an audio file or typed text
@@ -52,12 +59,8 @@ export async function POST(req) {
   let transcript = typed;
   if (!transcript && audio && typeof audio === 'object' && audio.size > 0) {
     try {
-      const result = await openai.audio.transcriptions.create({
-        file: audio,
-        model: 'gpt-4o-mini-transcribe',
-        prompt: 'A person describing a dream they had last night.',
-      });
-      transcript = (result.text || '').trim();
+      const result = await transcriptionProvider(openai).transcribe(audio, { prompt: 'A person describing a dream they had last night.' });
+      transcript = result.text;
     } catch (e) {
       console.error('transcription failed', e);
       return json({ error: "Couldn't hear that clearly. Try again, or type your dream instead." }, 400);
@@ -78,32 +81,71 @@ export async function POST(req) {
     return json({ error: 'Could not save the dream. Please try again.' }, 500);
   }
 
+  const t0 = Date.now();
+  await logEvent(supabase, user.id, 'dream_generation_started', { typed: !audio || !audio.size });
+
+  // 6. Dream Director: take this dream's credit atomically (in the database), then start the
+  //    production in THIS deployment's environment. It runs in the background with real stages.
+  if (cinematic) {
+    const claim = await claimCredit(user.id, dream.id, ent);
+    if (!claim.creditId) {
+      await supabase.from('dreams').delete().eq('id', dream.id);
+      if (claim.error) {
+        console.error('credit claim failed', claim.error);
+        return json({ error: 'Could not start your dream just now. Please try again.' }, 503);
+      }
+      return json({ error: premium ? "You've used this month's cinematic Dream Reels." : "You've used your free Dream Reel.", upgrade: !premium && ent.upgradeAvailable, limit: true }, 402);
+    }
+    try {
+      await createProduction({ dreamId: dream.id, userId: user.id, tier: ent.generationTier, creditId: claim.creditId });
+      after(() => kickWorker(dream.id));
+      return json({ id: dream.id, mode: 'cinematic' });
+    } catch (e) {
+      console.error('could not start production', e);
+      await refundCredit(claim.creditId, ent.generationTier);
+      return json({ error: 'Could not start your dream just now. Please try again.' }, 503);
+    }
+  }
+
+  // Not configured for cinematic films: the original picture renderer (labelled image_fallback).
   try {
     // 6. Ask the AI to split the dream into scenes
     const scenes = await writeScenes(openai, transcript);
 
-    // 7. Paint one picture per scene (all at the same time) and store them
+    // 7. Paint one picture per scene (all at the same time) and store them.
+    //    The narrated film is made afterwards by /api/dreams/[id]/reel.
     fal.config({ credentials: process.env.FAL_KEY });
     const suffix = STYLES[styleKey].suffix;
-    const painted = await Promise.all(
+    const imageModel = premium ? PREMIUM_IMAGE_MODEL : FREE_IMAGE_MODEL;
+    let built = await Promise.all(
       scenes.scenes.map(async (scene, i) => {
-        const url = await paintScene(`${scene.image_prompt}, ${suffix}`);
-        const stored = await storeImage(supabase, user.id, dream.id, i, url);
-        return { caption: scene.caption, image_prompt: scene.image_prompt, image_url: stored };
+        const url = await paintScene(imageModel, `${scene.image_prompt}, ${suffix}`);
+        const imageUrl = await storeImage(supabase, user.id, dream.id, i, url);
+        return { caption: scene.caption, image_prompt: scene.image_prompt, motion: scene.motion, image_url: imageUrl };
       })
     );
 
-    const { error: updErr } = await supabase
-      .from('dreams')
-      .update({ title: scenes.title, scenes: painted, status: 'ready' })
-      .eq('id', dream.id);
+    // 8. Premium: queue a moving clip for every scene (collected later by the reel page)
+    let videoStatus = null;
+    if (premium) {
+      built = await submitAnimation(built);
+      videoStatus = built.some((s) => s.video_request_id) ? 'animating' : 'failed';
+    }
+
+    // Only premium dreams touch video_status, so free dreams keep working even
+    // before the Premium database update has been run.
+    const update = { title: scenes.title, scenes: built, status: 'ready' };
+    if (videoStatus) update.video_status = videoStatus;
+    const { error: updErr } = await supabase.from('dreams').update(update).eq('id', dream.id);
     if (updErr) throw updErr;
 
-    return json({ id: dream.id });
+    await logEvent(supabase, user.id, 'dream_generation_completed', { ms: Date.now() - t0, scenes: built.length });
+    return json({ id: dream.id, mode: 'image_fallback' });
   } catch (e) {
     console.error('dream failed', e);
-    await supabase.from('dreams').update({ status: 'failed', error: String(e?.message || e) }).eq('id', dream.id);
-    return json({ error: 'Something went wrong while painting. Your credit was not wasted — try once more.' }, 500);
+    await supabase.from('dreams').update({ status: 'failed', error: String(e?.message || e).slice(0, 500) }).eq('id', dream.id);
+    await logEvent(supabase, user.id, 'dream_generation_failed', { ms: Date.now() - t0 });
+    return json({ error: 'Something went wrong while painting. Please try once more.' }, 500);
   }
 }
 
@@ -116,10 +158,11 @@ async function writeScenes(openai, transcript) {
       {
         role: 'system',
         content: `You turn a person's spoken description of a dream into a short visual story of exactly ${SCENE_COUNT} scenes.
-Return JSON: {"title": string, "scenes": [{"caption": string, "image_prompt": string}]}.
+Return JSON: {"title": string, "scenes": [{"caption": string, "image_prompt": string, "motion": string}]}.
 - title: 2–5 words, poetic, no full stop.
-- caption: one short sentence (max 12 words) in first person, present tense, as if narrating the dream. Keep the dreamer's own details and mood.
-- image_prompt: a vivid visual description for an image generator (max 40 words). Describe the setting, subject, light and colour. No people's real names. No text in the image. Do not mention the word "dream".
+- caption: one or two short sentences (max 22 words) in first person, past tense, as if softly narrating the dream aloud. Keep the dreamer's own details and mood. Captions are read aloud one after another, so together they should flow as one story.
+- image_prompt: a vivid visual description for an image generator (max 45 words). Describe the setting, subject, composition, light and colour. Vertical portrait framing. No people's real names. No text in the image. Do not mention the word "dream".
+- motion: what should gently move if this picture came to life (max 18 words), e.g. "waves of starlight roll in, the moon shimmers, camera slowly pushes forward".
 - The last scene should feel like waking or an ending.
 - Keep it gentle and safe for all ages, even if the dream was scary: show mood, not gore.`,
       },
@@ -133,16 +176,10 @@ Return JSON: {"title": string, "scenes": [{"caption": string, "image_prompt": st
   return parsed;
 }
 
-async function paintScene(prompt) {
-  const result = await fal.subscribe('fal-ai/flux/schnell', {
-    input: {
-      prompt,
-      image_size: 'portrait_16_9',
-      num_images: 1,
-      num_inference_steps: 4,
-      enable_safety_checker: true,
-    },
-  });
+async function paintScene(model, prompt) {
+  const input = { prompt, image_size: 'portrait_16_9', num_images: 1, enable_safety_checker: true };
+  if (model.includes('schnell')) input.num_inference_steps = 4;
+  const result = await fal.subscribe(model, { input });
   const url = result?.data?.images?.[0]?.url;
   if (!url) throw new Error('No image returned');
   return url;
@@ -156,12 +193,11 @@ async function storeImage(supabase, userId, dreamId, index, sourceUrl) {
   const contentType = res.headers.get('content-type') || 'image/jpeg';
   const ext = contentType.includes('png') ? 'png' : 'jpg';
   const path = `${userId}/${dreamId}/${index}.${ext}`;
-  const { error } = await supabase.storage.from('reels').upload(path, bytes, { contentType, upsert: true });
-  if (error) {
+  try {
+    return await storeBytes(supabase, path, bytes, contentType);
+  } catch (error) {
     // If storage fails, fall back to the original URL rather than losing the dream.
     console.error('storage upload failed', error);
     return sourceUrl;
   }
-  const { data } = supabase.storage.from('reels').getPublicUrl(path);
-  return data.publicUrl;
 }

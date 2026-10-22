@@ -320,3 +320,75 @@ h3 { font-size: 22px; }
 .guru-sheet .chat { overflow-y: auto; flex: 1; }
 .sheet-head { display: flex; justify-content: space-between; align-items: center; }
 @media (prefers-reduced-motion: reduce) { .orin-stage.thinking, .mic.listening { animation: none; } }
+
+/* ---- Dream Guru V2: Orin is home ------------------------------------------------------ */
+.guru-home { max-width: 480px; margin: 0 auto; min-height: 100dvh; display: flex; flex-direction: column; gap: 14px; padding: 16px 16px calc(var(--nav-h) + 24px + env(safe-area-inset-bottom)); }
+.guru-top { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 32px; }
+.brand-mark { font-family: var(--display); font-size: 20px; letter-spacing: .02em; color: var(--text); }
+.guru-about { flex: 1; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.guru-greeting { color: var(--text); }
+.guru-home .orin-stage { width: min(100%, 340px, 36dvh); margin: 0 auto; } /* portrait + mic fit on one phone screen */
+.linkbtn.small { min-height: 36px; padding: 6px 4px; font-size: 13px; }
+.btn.small { padding: 10px 16px; font-size: 14px; }
+.saved-note { font-size: 13px; color: var(--cyan); text-decoration: none; }
+.result-list { list-style: none; margin: 6px 0 0; padding: 0; width: 100%; display: flex; flex-direction: column; gap: 6px; text-align: left; }
+.result-list li { display: flex; justify-content: space-between; gap: 10px; background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 10px 14px; }
+.result-list a { text-decoration: none; font-weight: 500; }
+.result-list span { color: var(--muted); font-size: 13px; white-space: nowrap; }
+.cited { display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; }
+.cited a { font-size: 12px; padding: 5px 10px; border-radius: 999px; border: 1px solid rgba(245,181,68,.3); color: var(--amber); text-decoration: none; }
+.visualize-offer { display: flex; flex-direction: column; gap: 8px; align-items: center; margin-top: 6px; color: var(--muted); font-size: 14px; }
+.visualize-offer > div { display: flex; gap: 10px; align-items: center; }
+.guru-more { display: flex; justify-content: center; gap: 18px; font-size: 14px; }
+.guru-more a { color: var(--muted); text-decoration: none; }
+.guru-more a:hover, .guru-more a:focus-visible { color: var(--text); }
+.ask textarea { flex: 1; min-width: 0; resize: none; background: var(--surface); border: 1px solid var(--line); border-radius: 18px; padding: 12px 16px; color: var(--text); font-family: var(--body); font-size: 16px; line-height: 1.4; }
+.ask textarea:focus-visible { outline: 2px solid var(--cyan); }
+
+/* Onboarding */
+.onboard { max-width: 420px; margin: 0 auto; min-height: 100dvh; display: flex; flex-direction: column; justify-content: center; gap: 24px; padding: 24px 22px calc(var(--nav-h) + 24px); text-align: center; }
+.onboard section { display: flex; flex-direction: column; align-items: center; gap: 16px; }
+.onboard-portrait { width: 140px; height: 140px; border-radius: 50%; object-fit: cover; box-shadow: 0 0 0 1.5px rgba(245,181,68,.55), 0 0 40px rgba(245,181,68,.25); }
+.onboard-icon { font-size: 44px; }
+.onboard-dots { display: flex; gap: 8px; justify-content: center; }
+.onboard-dots i { width: 7px; height: 7px; border-radius: 50%; background: var(--line); }
+.onboard-dots i.on { background: var(--text); }
+
+/* My Dreams */
+.journal { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.journal[aria-busy="true"] { opacity: .6; }
+.journal-card { display: grid; grid-template-columns: 64px 1fr; gap: 14px; align-items: center; text-decoration: none; background: var(--surface); border: 1px solid var(--line); border-radius: 20px; padding: 12px; }
+.journal-card img, .journal-moon { width: 64px; height: 64px; border-radius: 14px; object-fit: cover; display: block; }
+.journal-moon { background: radial-gradient(circle at 65% 35%, rgba(245,181,68,.35), transparent 45%), radial-gradient(circle at 40% 60%, rgba(124,92,255,.35), rgba(18,14,34,1) 70%); }
+.journal-body { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.journal-body b { font-family: var(--display); font-size: 20px; font-weight: 500; line-height: 1.15; }
+.journal-meta { font-size: 12px; color: var(--muted); }
+.journal-summary { font-size: 14px; color: var(--muted); line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.journal-flags { display: flex; gap: 10px; font-size: 12px; color: var(--amber); }
+
+/* Dream memory page */
+.memory { display: flex; flex-direction: column; gap: 20px; }
+.memory section { display: flex; flex-direction: column; gap: 8px; }
+.memory-h { margin: 0; font-family: var(--body); font-size: 12px; letter-spacing: .2em; text-transform: uppercase; color: var(--muted); font-weight: 500; }
+.memory-story { margin: 0; font-family: var(--display); font-size: 20px; line-height: 1.45; }
+.memory-facts { gap: 14px !important; }
+.memory-facts .label { display: block; margin-bottom: 6px; }
+.memory-reflection p { margin: 0; line-height: 1.55; color: var(--text); border-left: 2px solid rgba(245,181,68,.45); padding-left: 12px; }
+.memory-edit { display: flex; flex-direction: column; gap: 8px; }
+.memory-edit input, .memory-edit textarea { background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 12px 14px; color: var(--text); font-family: var(--body); font-size: 16px; }
+.row-actions { display: flex; gap: 12px; align-items: center; }
+.related { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.related a { display: flex; flex-direction: column; gap: 2px; text-decoration: none; background: var(--surface); border: 1px solid var(--line); border-radius: 16px; padding: 12px 14px; }
+.related span { color: var(--muted); font-size: 13px; }
+
+/* Insights */
+.insight { display: flex; flex-direction: column; gap: 8px; }
+.insight h3 { margin: 0; font-family: var(--body); font-size: 12px; letter-spacing: .2em; text-transform: uppercase; color: var(--muted); font-weight: 500; }
+.insight p { margin: 0; line-height: 1.5; }
+.insight ul { margin: 0; padding-left: 18px; line-height: 1.5; }
+.insight-rows { list-style: none; padding: 0 !important; display: flex; flex-direction: column; }
+.insight-rows li { display: flex; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid var(--line); }
+.muted { color: var(--muted); }
+.muted-card { background: var(--surface); border: 1px solid var(--line); border-radius: 18px; padding: 14px; align-items: flex-start; }
+/* Text mode sits above the bottom navigation so the input and Send are never covered. */
+.guru-home .guru-sheet { z-index: 60; }

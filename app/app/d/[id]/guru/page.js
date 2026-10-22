@@ -1,12 +1,7 @@
-import GuruScreen from '@/components/GuruScreen';
-import { GURU_NAME } from '@/lib/guru-public';
+import { redirect } from 'next/navigation';
 
-export const metadata = {
-  title: `${GURU_NAME} · Dream Guru`,
-  robots: { index: false, follow: false },
-};
-
+// Talking about one dream now happens on the home screen with Orin (same conversation engine).
 export default async function GuruPage({ params }) {
   const { id } = await params;
-  return <GuruScreen dreamId={id} />;
+  redirect(/^[0-9a-f-]{36}$/i.test(id) ? `/?dream=${id}` : '/');
 }

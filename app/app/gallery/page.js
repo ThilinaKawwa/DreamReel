@@ -27,8 +27,10 @@ export default function Gallery() {
         .eq('user_id', session.user.id)
         .order('created_at', { ascending: false })
         .limit(100);
-      setDreams(data || []);
-      withCovers(data || []).then(setDreams).catch(() => {});
+      // Visual Memories: only dreams that became a Dream Reel (pictures or film).
+      const visual = (data || []).filter((d) => (d.scenes || []).length || d.status === 'pending');
+      setDreams(visual);
+      withCovers(visual).then(setDreams).catch(() => {});
       track('gallery_opened', { dreams: (data || []).length }, { onceKey: 'gallery' });
       setReels(await loadReels(getBrowserSupabase(), (data || []).map((d) => d.id)));
     })().catch(() => setDreams([]));
@@ -48,10 +50,10 @@ export default function Gallery() {
     <main className="app">
       <div className="greet-row">
         <div>
-          <div className="eyebrow accent">Archive</div>
-          <h1 style={{ marginTop: 8 }}>Dream Gallery</h1>
+          <div className="eyebrow accent">Dream Reels</div>
+          <h1 style={{ marginTop: 8 }}>Visual Memories</h1>
         </div>
-        <span className="iconbtn" aria-hidden="true">⏷</span>
+        <a className="linkbtn small" href="/dreams">My Dreams</a>
       </div>
 
       <label className="search">
@@ -73,9 +75,8 @@ export default function Gallery() {
       {dreams === null && <p className="lead">Loading…</p>}
       {dreams && dreams.length === 0 && (
         <div className="empty">
-          <h2>No dreams yet</h2>
-          <p className="lead">Tomorrow morning, tell it what you saw.</p>
-          <a className="btn primary" href="/create">Record one now</a>
+          <p className="lead">Dreams you choose to visualize will appear here.</p>
+          <a className="btn" href="/dreams">Open My Dreams</a>
         </div>
       )}
       {shown.length > 0 && (

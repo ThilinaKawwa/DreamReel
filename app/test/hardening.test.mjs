@@ -99,12 +99,15 @@ test('the private bucket has no browser policies and new tables are server-only'
 });
 
 // ---- 3. Access model ------------------------------------------------------------------
-test('free trial = ONE lifetime cinematic reel, no download, no Guru; sharing separate', () => {
+test('free trial = ONE lifetime cinematic reel, no download, limited Guru; sharing separate', () => {
   const p = accessPlans({}).free;
   assert.equal(p.cinematicReels, 1);
   assert.equal(p.period, 'lifetime');
   assert.equal(p.canDownload, false);
-  assert.equal(p.canUseGuru, false);
+  assert.equal(p.canUseGuru, true); // Guru-first: everyone talks to Orin, within an allowance
+  assert.equal(p.canUseGuruReading, false);
+  assert.equal(p.canViewAdvancedPatterns, false);
+  assert.ok(p.guruTextPerDay > 0 && p.guruVoicePerDay > 0);
   assert.equal(p.canShareLink, true);
   assert.equal(shareMode(p), 'link');
   assert.equal(shareMode({ ...p, canShareLink: false }), 'none');

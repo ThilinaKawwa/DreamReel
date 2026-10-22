@@ -2,78 +2,56 @@
 
 import { useEffect, useState } from 'react';
 import { ensureSession, getBrowserSupabase } from '@/lib/supabase';
-import { getName, greeting, stamp } from '@/lib/profile';
-import DreamCard, { loadReels, withCovers } from '@/components/DreamCard';
+import { api } from '@/lib/api';
 import { track, noteVisit } from '@/lib/analytics';
+import GuruScreen from '@/components/GuruScreen';
+import Onboarding, { ONBOARDED_KEY } from '@/components/Onboarding';
 
+/** Home is Orin. Everything else (My Dreams, Visual Memories, Insights) is one tap away. */
 export default function Home() {
-  const [name, setName] = useState('');
-  const [when, setWhen] = useState('');
-  const [hello, setHello] = useState('Good morning,');
-  const [recent, setRecent] = useState(null);
-  const [reels, setReels] = useState({});
+  const [ready, setReady] = useState(false);
+  const [onboard, setOnboard] = useState(false);
+  const [hasDreams, setHasDreams] = useState(true);
+  const [dreamId, setDreamId] = useState(null);
+  const [dreamTitle, setDreamTitle] = useState(null);
 
   useEffect(() => {
-    setName(getName());
-    setWhen(stamp());
-    setHello(greeting());
     (async () => {
+      const about = new URLSearchParams(window.location.search).get('dream');
       const session = await ensureSession();
-      const { data } = await getBrowserSupabase()
-        .from('dreams')
-        .select('id, title, created_at, status, scenes, style')
-        .eq('user_id', session.user.id)
-        .order('created_at', { ascending: false })
-        .limit(6);
-      setRecent(data || []);
-      withCovers(data || []).then(setRecent).catch(() => {});
-      track('landing_view', { dreams: (data || []).length }, { onceKey: 'landing' });
+      const supabase = getBrowserSupabase();
+      const { count } = await supabase.from('dreams').select('id', { count: 'exact', head: true }).eq('user_id', session.user.id);
+      const any = (count || 0) > 0;
+      setHasDreams(any);
+      let seen = false;
+      try { seen = Boolean(localStorage.getItem(ONBOARDED_KEY)); if (any && !seen) localStorage.setItem(ONBOARDED_KEY, '1'); } catch {}
+      setOnboard(!any && !seen);
+      if (about && /^[0-9a-f-]{36}$/i.test(about)) {
+        const { data } = await supabase.from('dreams').select('id, title').eq('id', about).eq('user_id', session.user.id).maybeSingle();
+        if (data) { setDreamId(data.id); setDreamTitle(data.title || 'Your dream'); }
+      }
+      track('landing_view', { dreams: count || 0 }, { onceKey: 'landing' });
       noteVisit();
-      setReels(await loadReels(getBrowserSupabase(), (data || []).map((d) => d.id)));
-    })().catch(() => setRecent([]));
+      // Quietly build any missing dream memories (including dreams from before Dream Guru V2).
+      if (any) api('/api/memory/sync', { json: {} }).catch(() => {});
+      setReady(true);
+    })().catch(() => setReady(true));
   }, []);
 
+  if (!ready) return <main className="guru-home"><p className="lead center">…</p></main>;
+  if (onboard) return <Onboarding onDone={() => setOnboard(false)} />;
   return (
-    <main className="app">
-      <div className="greet-row">
-        <div>
-          <div className="eyebrow">{when}</div>
-          <h1 style={{ marginTop: 10 }}>{hello}<br /><span className="grad-text">{name || 'dreamer'}</span></h1>
-        </div>
-        <a href="/profile" className="avatar" aria-label="Profile">🐘</a>
-      </div>
-
-      <div className="hero">
-        <p className="lead">Your night is still warm.</p>
-        <h2>Catch the dream before it fades</h2>
-      </div>
-
-      <div className="mic-wrap">
-        <div className="mic-ring">
-          <a className="mic-btn" href="/create" id="go-record" style={{ textDecoration: 'none' }}>
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3M9 21h6"/></svg>
-            Tap to record
-            <small>30 seconds</small>
-          </a>
-        </div>
-        <p className="lead">A quiet ritual for your waking mind</p>
-      </div>
-
-      <div>
-        <div className="eyebrow accent">Your night sky</div>
-        <div className="section-head" style={{ marginTop: 6 }}>
-          <h2>Recent dreams</h2>
-          <a href="/gallery">See all →</a>
-        </div>
-      </div>
-      {recent && recent.length > 0 && (
-        <div className="strip">
-          {recent.map((d) => <DreamCard key={d.id} dream={d} reel={reels[d.id]} big />)}
-        </div>
-      )}
-      {recent && recent.length === 0 && (
-        <p className="lead">Nothing here yet. Your first reel will appear right here.</p>
-      )}
-    </main>
+    <GuruScreen
+      key={dreamId || 'home'}
+      dreamId={dreamId}
+      dreamTitle={dreamTitle}
+      greeting={dreamId ? `What would you like to explore about this dream?` : greetingFor(hasDreams)}
+    />
   );
+}
+
+function greetingFor(hasDreams) {
+  const h = new Date().getHours();
+  if (!hasDreams) return h >= 4 && h < 12 ? 'Morning. Tell me anything you remember — even if it’s only a fragment.' : 'Tell me anything you remember — even if it’s only a fragment.';
+  return h >= 4 && h < 12 ? 'Morning. What do you remember?' : 'What do you remember?';
 }

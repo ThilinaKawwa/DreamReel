@@ -16,7 +16,7 @@ export async function POST(req) {
   if (!/^[0-9a-f-]{36}$/i.test(dreamId || '')) return json({ error: 'Which dream?' }, 400);
 
   // Access is decided on the server from the plan the Stripe webhook wrote — never from the request.
-  if (!(await getEntitlements(supabase, user.id)).canUseGuru) return json({ error: 'The Guru is part of Premium.', upgrade: true }, 402);
+  if (!(await getEntitlements(supabase, user.id)).canUseGuruReading) return json({ error: 'The Guru is part of Premium.', upgrade: true }, 402);
   const { data: existing } = await supabase.from('dream_readings').select('*').eq('dream_id', dreamId).maybeSingle();
   if (existing) return json({ reading: existing });
 

@@ -2,14 +2,14 @@
 
 import { usePathname } from 'next/navigation';
 
-const Home = () => (
-  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M4 10.5 12 4l8 6.5V20a1 1 0 0 1-1 1h-5v-6H10v6H5a1 1 0 0 1-1-1z"/></svg>
+const Guru = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z"/></svg>
 );
-const Gallery = () => (
-  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="5" width="18" height="14" rx="3"/><path d="m3 16 5-5 4 4 3-3 6 6"/><circle cx="16" cy="9" r="1.5"/></svg>
+const Dreams = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><path d="M5 4h11a3 3 0 0 1 3 3v13H8a3 3 0 0 1-3-3z"/><path d="M5 17a3 3 0 0 1 3-3h11M9 8h6"/></svg>
 );
-const Plus = () => (
-  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><path d="M12 6v12M6 12h12"/></svg>
+const Insights = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"><circle cx="6" cy="7" r="1.6"/><circle cx="17" cy="5" r="1.6"/><circle cx="12" cy="13" r="1.6"/><circle cx="19" cy="17" r="1.6"/><circle cx="7" cy="19" r="1.6"/><path d="m7.3 8 3.6 3.8M13.4 12.2l2.6-5.6M13.3 14l4.4 2.4M10.8 14l-2.8 3.8"/></svg>
 );
 const User = () => (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="10" r="3"/><path d="M6.5 18.5c1.5-2.5 3.5-3.5 5.5-3.5s4 1 5.5 3.5"/></svg>
@@ -21,9 +21,9 @@ export default function Nav() {
   return (
     <nav className="nav" aria-label="Main">
       <ul>
-        <li><a href="/" className={is('/') ? 'on' : ''}><Home />Home</a></li>
-        <li><a href="/gallery" className={is('/gallery') || is('/library') ? 'on' : ''}><Gallery />Gallery</a></li>
-        <li><a href="/create" className={`create ${is('/create') ? 'on' : ''}`}><span className="ico"><Plus /></span>Create</a></li>
+        <li><a href="/" className={is('/') ? 'on' : ''}><Guru />Guru</a></li>
+        <li><a href="/dreams" className={is('/dreams') || is('/d/') || is('/gallery') || is('/library') ? 'on' : ''}><Dreams />Dreams</a></li>
+        <li><a href="/insights" className={is('/insights') ? 'on' : ''}><Insights />Insights</a></li>
         <li><a href="/profile" className={is('/profile') ? 'on' : ''}><User />Profile</a></li>
       </ul>
     </nav>

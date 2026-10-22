@@ -81,7 +81,7 @@ export default function Profile() {
       ? await supabase.from('profiles').update({ guru_tradition: key, updated_at: now }).eq('user_id', userId)
       : await supabase.from('profiles').insert({ user_id: userId, guru_tradition: key });
     if (error) setErr('Could not save that choice.');
-    else { if (!plan?.user_id) setPlan((p) => ({ ...p, user_id: userId })); flash(`${GURU_NAME} will read through: ${TRADITION_OPTIONS.find((t) => t.key === key).label}`); }
+    else { if (!plan?.user_id) setPlan((p) => ({ ...p, user_id: userId })); flash(`Saved: ${TRADITION_OPTIONS.find((t) => t.key === key).label}`); }
   }
 
   // Turns this phone's anonymous account into one tied to an email, so it can be opened anywhere.
@@ -145,21 +145,21 @@ export default function Profile() {
         {premium ? (
           <>
             <p className="lead">
-              Guru readings, voice chat, dream memory and moving reels.
+              More time with {GURU_NAME}, his full memory of your dreams, deeper patterns — and Dream Reels you can download.
               {plan?.current_period_end && <> Renews {new Date(plan.current_period_end).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}.</>}
             </p>
             <button className="btn block" onClick={manage} disabled={busy}>Manage or cancel</button>
           </>
         ) : (
           <>
-            <p className="lead">A wise reading of every dream, conversations by voice, a guide who remembers your dreams — and reels that truly move.</p>
+            <p className="lead">You can talk to {GURU_NAME} every day. Premium gives him more time, his full memory of your dream history, deeper patterns — and Dream Reels you can download.</p>
             <button className="btn primary block" onClick={upgrade} disabled={busy || plan === null}>✦ Go Premium · {PREMIUM_PRICE_LABEL}</button>
           </>
         )}
       </section>
 
       <section className="field">
-        <label>How should {GURU_NAME} read your dreams?</label>
+        <label>A tradition {GURU_NAME} may mention when he reflects (optional)</label>
         <div className="traditions">
           {TRADITION_OPTIONS.map((t) => (
             <button key={t.key} className={`style ${tradition === t.key ? 'on' : ''}`} onClick={() => chooseTradition(t.key)} aria-pressed={tradition === t.key} disabled={!userId}>
@@ -190,7 +190,7 @@ export default function Profile() {
       {err && <div className="error">{err}</div>}
 
       <div className="list">
-        <div><span>Plan</span>{premium ? 'Premium' : 'Free · 3 dreams a day'}</div>
+        <div><span>Plan</span>{premium ? 'Premium' : 'Free'}</div>
         <a href="/gallery"><span>Your dreams</span>Open gallery →</a>
       </div>
     </main>

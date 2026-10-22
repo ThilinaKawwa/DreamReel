@@ -76,7 +76,7 @@ test('analytics: only behaviour is recorded, never dream text', () => {
   assert.deepEqual(p, { seconds: 27.123, method: 'file', ok: true });
   assert.ok(EVENTS.includes('video_shared'));
   // The app's list and the database's allowed list (latest migration) must match exactly.
-  const sql = readFileSync(new URL('../supabase/migrations/20261017_dream_director.sql', import.meta.url), 'utf8');
+  const sql = readFileSync(new URL('../supabase/migrations/20261022_guru_memory.sql', import.meta.url), 'utf8');
   const allowed = sql.slice(sql.lastIndexOf('check (event in (')).match(/'([a-z_]+)'/g).map((x) => x.slice(1, -1));
   assert.deepEqual([...allowed].sort(), [...EVENTS].sort());
 });

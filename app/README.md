@@ -1,16 +1,20 @@
 # Dream Reel
 
-Tell it your dream in the morning. It paints five pictures and plays them back as a short reel you can share.
+**An AI companion that remembers your dreams.** Open the app, tell Orin (the Dream Guru) what you remember, and he helps you capture it, explore it and notice what repeats over time. Any dream can become a Dream Reel if you want to see it.
 
 ## How it works (plain English)
-1. You tap the button and talk (or type). The browser records the audio.
-2. The audio goes to `/api/dreams` on the server, which:
-   - turns the voice into text (OpenAI),
-   - splits it into 5 scenes with captions (OpenAI),
-   - paints one picture per scene (fal.ai, Flux),
-   - copies the pictures into Supabase storage and saves the dream.
-3. You're sent to `/d/<id>` where the reel plays. That link is shareable.
-4. `/library` shows all your dreams.
+1. Home is Orin. You tap the mic and talk, or choose "Prefer to type?". Voice and text are the same conversation.
+2. Your dream is **saved straight away**, before Orin replies. He reflects back what he heard and may ask one or two useful questions; your answers are added to the same dream.
+3. In the background, the app builds the dream's **memory**:
+   - a structured record of the dream;
+   - the people, places and things in it;
+   - links to related earlier dreams;
+   - patterns across your journal.
+4. Next time, Orin retrieves only the earlier dreams that are relevant, and says honestly when there are none.
+5. **My Dreams** (`/dreams`) is your private archive. **Insights** (`/insights`) shows what recurs. **Visual Memories** (`/gallery`) holds the dreams you chose to visualize.
+6. "Visualize this dream" sends the saved dream to the existing Dream Director (below), with no second copy of the dream.
+
+Full design: `../docs/guru-v2.md`. Database update: `supabase/migrations/20261022_guru_memory.sql` (run after the earlier migrations, in date order).
 
 Visitors get an instant anonymous account, so there's no sign-up wall.
 

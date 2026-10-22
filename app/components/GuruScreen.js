@@ -2,99 +2,94 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import OrinAvatar from '@/components/OrinAvatar';
-import { getBrowserSupabase } from '@/lib/supabase';
+import { ensureSession, getBrowserSupabase } from '@/lib/supabase';
 import { api, startPremium, pickMimeType } from '@/lib/api';
 import { track } from '@/lib/analytics';
 import { GURU_NAME } from '@/lib/guru-public';
 import { expressionFor } from '@/lib/guru-expression';
 import { textToVisemes, visemeAt } from '@/lib/visemes';
+import { dreamDate } from '@/lib/profile';
 
 const STATUS = {
-  idle: 'Tap to talk',
+  idle: 'Tap to speak',
   listening: 'Listening… tap when you’re done',
   thinking: `${GURU_NAME} is reflecting…`,
-  speaking: 'Tap to interrupt',
+  speaking: 'Tap to stop',
   error: 'Something went quiet. Tap to try again.',
 };
+const CONVO_KEY = 'dreamreel.conversation';
+const CONVO_HOURS = 6; // come back within this long and it's the same conversation
 
-/** The small card under a dream: opens the Guru, or shows a tasteful locked state. */
-export function GuruInvite({ dreamId, access }) {
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState('');
-  if (access.canUseGuru) {
-    return (
-      <a className="guru-invite" href={`/d/${dreamId}/guru`}>
-        <img className="guru-avatar" src="/orin-avatar-256.jpg" alt="" width={56} height={56} />
-        <span><span className="eyebrow accent">Dream Guru</span><b>Talk with {GURU_NAME} about this dream</b></span>
-        <span aria-hidden="true">→</span>
-      </a>
-    );
-  }
-  async function unlock() {
-    track('upgrade_clicked', { from: 'guru' });
-    setBusy(true); setErr('');
-    try { await startPremium(); } catch (e) { setErr(e.message); setBusy(false); }
-  }
+/** The small card under a dream: talk with Orin about it. */
+export function GuruInvite({ dreamId }) {
   return (
-    <section className="guru-invite locked" aria-label="Dream Guru (locked)">
+    <a className="guru-invite" href={`/?dream=${dreamId}`}>
       <img className="guru-avatar" src="/orin-avatar-256.jpg" alt="" width={56} height={56} />
-      <span>
-        <span className="eyebrow accent">Dream Guru · Premium</span>
-        <b>{GURU_NAME} can talk this dream through with you</b>
-        <small>A calm conversation, by voice or text. For reflection, not prediction.</small>
-      </span>
-      {access.upgradeAvailable
-        ? <button className="btn primary block" onClick={unlock} disabled={busy}>{busy ? 'Opening…' : 'Unlock Dream Guru'}</button>
-        : <p className="fine">Premium isn’t open yet — {GURU_NAME} is coming soon.</p>}
-      {err && <div className="error">{err}</div>}
-    </section>
+      <span><span className="eyebrow accent">Dream Guru</span><b>Talk to {GURU_NAME} about this dream</b></span>
+      <span aria-hidden="true">→</span>
+    </a>
   );
 }
 
-/** The immersive Guru: a living portrait, one mic button, and an optional text chat. */
-export default function GuruScreen({ dreamId }) {
-  const [access, setAccess] = useState(null);
-  const [dream, setDream] = useState(null);
+function savedConversation(dreamId) {
+  try {
+    const c = JSON.parse(localStorage.getItem(CONVO_KEY) || 'null');
+    if (!c?.id || Date.now() - c.at > CONVO_HOURS * 3600e3) return null;
+    if ((c.dreamId || null) !== (dreamId || null)) return null; // a specific dream has its own conversation
+    return c;
+  } catch { return null; }
+}
+function rememberConversation(c) {
+  try { localStorage.setItem(CONVO_KEY, JSON.stringify({ ...c, at: Date.now() })); } catch {}
+}
+
+/**
+ * Orin — the home of Dream Reel. One living portrait, one microphone, and a text mode that is
+ * the SAME conversation (shared history, dream and memory). Voice: idle → listening →
+ * processing → speaking → idle, with the mic ready again the moment he finishes.
+ *
+ * @param {{ dreamId?: string|null, greeting: string, dreamTitle?: string|null }} props
+ */
+export default function GuruScreen({ dreamId = null, greeting, dreamTitle = null }) {
   const [state, setState] = useState('idle');
   const [expression, setExpression] = useState('warm');
   const [caption, setCaption] = useState('');
   const [messages, setMessages] = useState([]);
-  const [reading, setReading] = useState(null);
+  const [conversationId, setConversationId] = useState(null);
+  const [currentDream, setCurrentDream] = useState(dreamId);
+  const [savedNote, setSavedNote] = useState(null);   // { dreamId, first }
+  const [results, setResults] = useState(null);       // search results [{id,title,date}]
+  const [cited, setCited] = useState([]);
+  const [offer, setOffer] = useState(null);           // { dreamId } — "Would you like me to visualize this dream?"
+  const [visual, setVisual] = useState('');           // visualize progress words
   const [chatOpen, setChatOpen] = useState(false);
   const [text, setText] = useState('');
-  const [err, setErr] = useState('');
+  const [err, setErr] = useState(null);               // { message, upgrade, canType }
 
   const levelRef = useRef(0);
   const visemeRef = useRef('rest');
-  const speech = useRef(null); // { track, startAt } for approximate viseme sync
+  const speech = useRef(null);
   const audioCtx = useRef(null);
   const source = useRef(null);
   const rec = useRef(null);
   const meter = useRef(0);
   const endRef = useRef(null);
 
+  // Resume today's conversation (same history in voice and text).
   useEffect(() => {
     let off = false;
-    (async () => {
-      const a = await api('/api/me/entitlements', { method: 'GET' }).catch(() => null);
-      if (off) return;
-      setAccess(a || { canUseGuru: false });
-      if (!a?.canUseGuru) return;
-      track('guru_opened', {}, { onceKey: `guru-${dreamId}` });
-      const supabase = getBrowserSupabase();
-      const [{ data: d }, { data: m }] = await Promise.all([
-        supabase.from('dreams').select('id, title, status').eq('id', dreamId).maybeSingle(),
-        supabase.from('guru_messages').select('id, role, content, created_at').eq('dream_id', dreamId).order('created_at', { ascending: true }),
-      ]);
-      if (off) return;
-      setDream(d || false);
-      if (m) setMessages(m);
-      if (d) {
-        api('/api/guru/reading', { json: { dreamId } })
-          .then((r) => { if (!off) { setReading(r.reading); setCaption(r.reading?.summary || ''); setExpression('warm'); } })
-          .catch((e) => !off && setErr(e.message));
-      }
-    })();
+    track('guru_opened', { about_dream: Boolean(dreamId) }, { onceKey: `guru-${dreamId || 'home'}` });
+    const saved = savedConversation(dreamId);
+    if (saved) {
+      setConversationId(saved.id);
+      if (saved.capturedDream) setCurrentDream(saved.capturedDream);
+      (async () => {
+        const session = await ensureSession();
+        const { data } = await getBrowserSupabase().from('guru_messages').select('id, role, content, created_at')
+          .eq('conversation_id', saved.id).eq('user_id', session.user.id).order('created_at', { ascending: true }).limit(60);
+        if (!off && data) setMessages(data);
+      })().catch(() => {});
+    }
     return () => { off = true; stopAll(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dreamId]);
@@ -147,7 +142,7 @@ export default function GuruScreen({ dreamId }) {
     node.onended = () => {
       if (source.current === node) {
         source.current = null; speech.current = null; visemeRef.current = 'rest';
-        cancelAnimationFrame(meter.current); levelRef.current = 0; setState('idle');
+        cancelAnimationFrame(meter.current); levelRef.current = 0; setState('idle'); // mic is ready again at once
       }
     };
     source.current = node;
@@ -159,21 +154,29 @@ export default function GuruScreen({ dreamId }) {
   }, []);
 
   async function ask({ question, audio, voice }) {
-    setErr('');
+    setErr(null); setResults(null); setCited([]);
     setState('thinking');
     setExpression('thoughtful');
     const form = new FormData();
-    form.append('dreamId', dreamId);
-    if (audio) form.append('audio', audio, `question.${audio.type.includes('mp4') ? 'm4a' : 'webm'}`);
+    if (conversationId) form.append('conversationId', conversationId);
+    if (dreamId) form.append('dreamId', dreamId);
+    if (audio) form.append('audio', audio, `speech.${audio.type.includes('mp4') ? 'm4a' : 'webm'}`);
     else form.append('text', question);
     if (voice) form.append('speak', '1');
     const tempId = `tmp-${Date.now()}`;
     setMessages((m) => [...m, { id: tempId, role: 'user', content: question || '🎙 …' }]);
     try {
-      const d = await api('/api/guru/chat', { form });
+      const d = await api('/api/guru/talk', { form });
+      setConversationId(d.conversationId);
+      setCurrentDream(d.dreamId);
+      rememberConversation({ id: d.conversationId, dreamId: dreamId || null, capturedDream: d.dreamId || null });
       const expr = d.expression || expressionFor(d.answer);
       setMessages((m) => [...m.map((x) => (x.id === tempId ? { ...x, content: d.question } : x)), { id: d.messageId || `a-${Date.now()}`, role: 'assistant', content: d.answer }]);
       setCaption(d.answer);
+      if (d.newDream) setSavedNote({ dreamId: d.dreamId });
+      if (d.results) setResults(d.results);
+      if (d.cited?.length) setCited(d.cited);
+      if (d.offerVisualize || d.action?.type === 'confirm_visualize') setOffer({ dreamId: d.dreamId });
       if (d.audio) {
         const bin = Uint8Array.from(atob(d.audio), (c) => c.charCodeAt(0));
         await play(bin.buffer, expr, d.answer);
@@ -183,9 +186,10 @@ export default function GuruScreen({ dreamId }) {
       }
     } catch (e) {
       setMessages((m) => m.filter((x) => x.id !== tempId));
-      setErr(e.message);
+      setErr({ message: e.message, upgrade: e.upgrade, canType: e.status === 402 || e.status === 400 || e.status === 429 });
       setExpression('concerned');
       setState('error');
+      if (question) setText((t) => t || question); // never lose what they typed
     }
   }
 
@@ -193,7 +197,7 @@ export default function GuruScreen({ dreamId }) {
     if (state === 'speaking') { stopAll(); setState('idle'); return; }
     if (state === 'thinking') return;
     if (state === 'listening') { rec.current?.stop(); return; }
-    setErr('');
+    setErr(null);
     const ctx = engine();
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
@@ -215,28 +219,18 @@ export default function GuruScreen({ dreamId }) {
         else setState('idle');
       };
       r.stream = stream;
-      r.limit = setTimeout(() => r.state === 'recording' && r.stop(), 60000);
+      r.limit = setTimeout(() => r.state === 'recording' && r.stop(), 120000); // dreams can take a while to tell
       rec.current = r;
       r.start();
       setState('listening');
       setExpression('curious');
     } catch {
-      setErr(`Allow the microphone to talk with ${GURU_NAME} — or type instead.`);
+      setErr({ message: `Allow the microphone to talk with ${GURU_NAME} — or type instead.`, canType: true });
       setState('error');
     }
   }
 
-  async function hearReading() {
-    if (state === 'speaking') { stopAll(); setState('idle'); return; }
-    engine();
-    setState('thinking');
-    try {
-      const blob = await api('/api/guru/speak', { json: { dreamId } });
-      await play(await blob.arrayBuffer(), 'warm', reading?.reading || '');
-    } catch (e) { setErr(e.message); setState('error'); }
-  }
-
-  function openChat() { setChatOpen(true); track('guru_chat_mode_opened'); }
+  function openChat() { setChatOpen(true); track('guru_text_opened'); track('guru_chat_mode_opened'); }
   function send(e) {
     e.preventDefault();
     const q = text.trim();
@@ -246,67 +240,109 @@ export default function GuruScreen({ dreamId }) {
     ask({ question: q, voice: false });
   }
 
-  if (!access) return <main className="guru-screen"><p className="lead center">Opening…</p></main>;
-  if (!access.canUseGuru) {
-    return (
-      <main className="guru-screen">
-        <div className="create-top"><a href={`/d/${dreamId}`} className="iconbtn" aria-label="Back">←</a></div>
-        <div className="guru-portrait locked"><img src="/orin.jpg" alt={`${GURU_NAME}, the Dream Guru`} width={900} height={1117} /></div>
-        <GuruInvite dreamId={dreamId} access={access} />
-      </main>
-    );
-  }
-  if (dream === false) {
-    return <main className="guru-screen"><div className="empty"><h2>This dream isn’t here</h2><a className="btn primary" href="/gallery">Your dreams</a></div></main>;
+  function newDream() {
+    stopAll();
+    try { localStorage.removeItem(CONVO_KEY); } catch {}
+    if (dreamId) { window.location.href = '/'; return; }
+    setConversationId(null); setCurrentDream(null); setMessages([]); setCaption(''); setSavedNote(null);
+    setResults(null); setCited([]); setOffer(null); setVisual(''); setErr(null); setState('idle'); setExpression('warm');
   }
 
+  async function visualize() {
+    const id = offer?.dreamId;
+    if (!id) return;
+    setVisual('Starting…');
+    try {
+      const r = await api(`/api/dreams/${id}/visualize`, { json: {} });
+      setOffer(null);
+      setVisual(r.status === 'exists' ? 'This dream already has a Dream Reel.' : 'Your Dream Reel is being made. It will appear with this dream.');
+    } catch (e) {
+      setVisual('');
+      setErr({ message: e.message, upgrade: e.upgrade });
+    }
+  }
+
+  async function upgrade() {
+    track('upgrade_clicked', { from: 'guru' });
+    try { await startPremium(); } catch (e) { setErr({ message: e.message }); }
+  }
+
+  const status = err?.message || STATUS[state];
+
   return (
-    <main className="guru-screen">
-      <div className="create-top">
-        <a href={`/d/${dreamId}`} className="iconbtn" aria-label="Back to the dream">←</a>
-        <span className="eyebrow accent">{dream?.title || 'Dream Guru'}</span>
-        <span className="iconbtn" aria-hidden="true" style={{ visibility: 'hidden' }} />
+    <main className="guru-home">
+      <div className="guru-top">
+        <span className="brand-mark">Dream Reel</span>
+        {dreamTitle && <span className="eyebrow accent guru-about">{dreamTitle}</span>}
+        {(currentDream || messages.length > 0) && <button className="linkbtn small" onClick={newDream}>New dream</button>}
       </div>
 
       <OrinAvatar state={state} expression={expression} levelRef={levelRef} visemeRef={visemeRef} />
 
       <div className="guru-caption" aria-live="polite">
-        {caption ? <p>{caption}</p> : <p className="muted">{reading === null && !err ? `${GURU_NAME} is reading your dream…` : ''}</p>}
-        {reading && state !== 'speaking' && (
-          <button className="linkbtn" onClick={hearReading}>▶ Hear {GURU_NAME}’s reading</button>
+        {caption ? <p>{caption}</p> : <p className="guru-greeting">{greeting}</p>}
+        {savedNote && (
+          <a className="saved-note" href={`/d/${savedNote.dreamId}`}>✓ Saved to My Dreams</a>
         )}
+        {results && (
+          results.length ? (
+            <ul className="result-list" aria-label="Matching dreams">
+              {results.map((r) => <li key={r.id}><a href={`/d/${r.id}`}>{r.title}</a><span>{r.date ? dreamDate(r.date) : ''}</span></li>)}
+            </ul>
+          ) : null
+        )}
+        {!results && cited.length > 0 && (
+          <div className="cited">{cited.map((c) => <a key={c.id} href={`/d/${c.id}`} onClick={() => track('related_dream_opened', { from: 'guru' })}>{c.title}</a>)}</div>
+        )}
+        {offer && (
+          <div className="visualize-offer">
+            <span>Would you like me to visualize this dream?</span>
+            <div><button className="btn primary small" onClick={visualize}>Visualize this dream</button><button className="linkbtn small" onClick={() => setOffer(null)}>Not now</button></div>
+          </div>
+        )}
+        {visual && <p className="fine">{visual}</p>}
       </div>
 
       <div className="guru-controls">
         <button
           className={`mic ${state}`}
           onClick={onMic}
-          disabled={state === 'thinking' || (!reading && !err)}
+          disabled={state === 'thinking'}
           aria-label={state === 'listening' ? 'Stop and send' : state === 'speaking' ? `Stop ${GURU_NAME}` : `Talk to ${GURU_NAME}`}
           aria-pressed={state === 'listening'}
         >
-          {state === 'listening' ? '■' : state === 'speaking' ? '❚❚' : '🎙'}
+          {state === 'listening' ? '■' : state === 'speaking' ? '❚❚' : <MicIcon />}
         </button>
-        <div className="guru-status" role="status">{err || STATUS[state]}</div>
+        <div className="guru-status" role="status">{status}</div>
+        {err?.upgrade && <button className="btn primary small" onClick={upgrade}>See Premium</button>}
         <button className="linkbtn" onClick={openChat}>Prefer to type?</button>
       </div>
-      <p className="fine">{GURU_NAME} is an AI guide for reflection — not a psychic, therapist or prediction of real events.</p>
+
+      <nav className="guru-more" aria-label="Your dream world">
+        <a href="/dreams">My Dreams</a>
+        <a href="/gallery">Visual Memories</a>
+        <a href="/insights">Insights</a>
+      </nav>
+      <p className="fine">{GURU_NAME} is an AI companion for reflection — not a therapist, psychic or prediction of real events.</p>
 
       {chatOpen && (
         <div className="guru-sheet" role="dialog" aria-label={`Chat with ${GURU_NAME}`}>
           <div className="sheet-head">
-            <b>Chat with {GURU_NAME}</b>
-            <button className="iconbtn" onClick={() => setChatOpen(false)} aria-label="Close chat">×</button>
+            <b>{GURU_NAME}</b>
+            <button className="linkbtn small" onClick={() => setChatOpen(false)}>Use voice</button>
           </div>
           <div className="chat">
+            {messages.length === 0 && <div className="msg-row assistant"><div className="msg assistant">{greeting}</div></div>}
             {messages.map((m) => (
               <div key={m.id} className={`msg-row ${m.role}`}><div className={`msg ${m.role}`}>{m.content}</div></div>
             ))}
             {state === 'thinking' && <div className="msg-row assistant"><div className="msg assistant thinking">{GURU_NAME} is reflecting<span className="dots" /></div></div>}
             <div ref={endRef} />
           </div>
+          {err?.message && <div className="error">{err.message}</div>}
           <form className="ask" onSubmit={send}>
-            <input value={text} onChange={(e) => setText(e.target.value)} placeholder={`Ask ${GURU_NAME} about your dream`} maxLength={1500} aria-label={`Ask ${GURU_NAME}`} />
+            <textarea value={text} onChange={(e) => setText(e.target.value)} rows={2} placeholder="What do you remember?" maxLength={4000} aria-label={`Write to ${GURU_NAME}`}
+              onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) send(e); }} />
             <button className="send" type="submit" disabled={!text.trim() || state === 'thinking'} aria-label="Send">➤</button>
           </form>
         </div>
@@ -314,3 +350,7 @@ export default function GuruScreen({ dreamId }) {
     </main>
   );
 }
+
+const MicIcon = () => (
+  <svg viewBox="0 0 24 24" width="34" height="34" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3" /><path d="M5 11a7 7 0 0 0 14 0M12 18v3M9 21h6" /></svg>
+);

@@ -14,6 +14,11 @@ export const EVENTS = [
   'reel_watched', 'reel_download_blocked_free', 'upgrade_clicked',
   'guru_opened', 'guru_voice_started', 'guru_response_completed', 'guru_chat_mode_opened',
   'cinematic_failed', 'reel_budget_blocked',
+  // Dream Guru V2 (supabase/migrations/20261022_guru_memory.sql)
+  'guru_voice_completed', 'guru_text_opened', 'dream_capture_started', 'dream_saved',
+  'clarification_asked', 'dream_recalled', 'dream_search_used', 'related_dream_opened',
+  'insights_opened', 'visualize_dream_clicked', 'visualize_offered', 'guru_limit_reached',
+  'onboarding_completed', 'dream_deleted', 'dream_edited', 'memory_built', 'memory_failed',
 ];
 
 /** Keeps only short, non-text-like values: numbers, booleans and tiny labels. */

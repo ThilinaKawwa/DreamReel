@@ -12,5 +12,7 @@ export async function GET(req) {
     plan: e.plan, canDownload: e.canDownload, shareMode: e.shareMode, canShareLink: e.canShareLink, canShareFile: e.canShareFile,
     canUseGuru: e.canUseGuru, cinematicReels: e.cinematicReels, period: e.period, reelsLeft: e.reelsLeft, canGenerateReel: e.canGenerateReel,
     upgradeAvailable: e.upgradeAvailable, renewsAt: e.renewsAt,
+    canUseGuruReading: e.canUseGuruReading, canViewAdvancedPatterns: e.canViewAdvancedPatterns,
+    guruTextPerDay: e.guruTextPerDay, guruVoicePerDay: e.guruVoicePerDay,
   }, 200);
 }

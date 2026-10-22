@@ -3,7 +3,7 @@ export const GURU_NAME = 'Orin';
 export const PREMIUM_PRICE_LABEL = process.env.NEXT_PUBLIC_PREMIUM_PRICE_LABEL || '£3.99 a month';
 
 export const TRADITION_OPTIONS = [
-  { key: 'blend', label: 'All traditions', blurb: 'Psychology first, with the wisdom traditions that fit your dream' },
+  { key: 'blend', label: 'None in particular', blurb: 'Grounded in your own details and feelings (default)' },
   { key: 'psychology', label: 'Psychology', blurb: 'Jung, emotion and modern dream science' },
   { key: 'islamic', label: 'Islamic', blurb: 'Ibn Sirin and the classical scholars' },
   { key: 'christian', label: 'Christian', blurb: 'Biblical dreams and contemplative wisdom' },

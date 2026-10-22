@@ -24,7 +24,7 @@ export async function POST(req) {
   const { user, supabase } = auth;
 
   // Access is decided on the server from the plan the Stripe webhook wrote — never from the request.
-  if (!(await getEntitlements(supabase, user.id)).canUseGuru) return json({ error: 'The Guru is part of Premium.', upgrade: true }, 402);
+  if (!(await getEntitlements(supabase, user.id)).canUseGuruReading) return json({ error: 'The Guru is part of Premium.', upgrade: true }, 402);
   const profile = await getProfile(supabase, user.id);
 
   const form = await req.formData();

@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import Player from '@/components/Player';
 import ReelHero, { STAGE_WORDS } from '@/components/ReelHero';
-import { GuruInvite } from '@/components/GuruScreen';
+import DreamMemory from '@/components/DreamMemory';
 import { getBrowserSupabase } from '@/lib/supabase';
 import { api } from '@/lib/api';
 import { dreamDate } from '@/lib/profile';
@@ -21,7 +21,6 @@ export default function DreamView({ dream: shared, id }) {
   const [access, setAccess] = useState(null); // from /api/me/entitlements (display only)
   const [reading, setReading] = useState(null);
   const [making, setMaking] = useState(null);
-  const [details, setDetails] = useState(false);
   const [toast, setToast] = useState('');
 
   const say = useCallback((msg) => { setToast(msg); setTimeout(() => setToast(''), 2600); }, []);
@@ -60,7 +59,7 @@ export default function DreamView({ dream: shared, id }) {
       // After checkout the webhook can take a few seconds to land.
       for (let i = 0; i < (upgraded ? 8 : 1); i++) {
         const a = await api('/api/me/entitlements', { method: 'GET' }).catch(() => null);
-        if (a && (a.canUseGuru || i === (upgraded ? 7 : 0))) { if (!cancelled) setAccess(a); break; }
+        if (a && (a.plan === 'premium' || i === (upgraded ? 7 : 0))) { if (!cancelled) setAccess(a); break; }
         await new Promise((r) => setTimeout(r, 2500));
       }
       const { data: r } = await supabase.from('dream_readings').select('*').eq('dream_id', id).maybeSingle();
@@ -122,7 +121,7 @@ export default function DreamView({ dream: shared, id }) {
         <div className="create-top"><a href="/" className="iconbtn" aria-label="Back">←</a></div>
         <div className="empty">
           {checked ? (
-            <><h2>This dream isn't here</h2><p className="lead">It may be private, or the link is wrong.</p><a className="btn primary" href="/create">Capture your own dream</a></>
+            <><h2>This dream isn't here</h2><p className="lead">It may be private, or the link is wrong.</p><a className="btn primary" href="/">Capture your own dream</a></>
           ) : (
             <p className="lead">Opening…</p>
           )}
@@ -143,72 +142,62 @@ export default function DreamView({ dream: shared, id }) {
           <h2>{failed ? "This one didn't finish" : STAGE_WORDS[making.stage] || 'Understanding your dream…'}</h2>
           <p className="lead">{failed ? making.error : 'Real video takes a few minutes. You can leave this page — it keeps going.'}</p>
           {failed && making.canRetry && <button className="btn primary" onClick={retryCinematic}>Try again</button>}
-          {failed && !making.canRetry && <a className="btn primary" href="/create">Tell it again</a>}
+          {failed && !making.canRetry && <a className="btn primary" href="/">Tell Orin again</a>}
         </div>
       </main>
     );
   }
 
-  if (dream.status !== 'ready') {
+  // 'saved' = a dream told to Orin: kept as a memory, with no pictures unless they choose to visualize it.
+  if (dream.status !== 'ready' && !(isOwner && dream.status === 'saved')) {
     return (
       <main className="app">
         <div className="create-top"><a href="/" className="iconbtn" aria-label="Back">←</a><span className="eyebrow">{dreamDate(dream.created_at)}</span></div>
         <div className="empty">
-          <h2>{dream.status === 'failed' ? "This one didn't paint" : 'Still painting…'}</h2>
+          <h2>{dream.status === 'failed' ? "This one didn't paint" : checked && !isOwner && dream.status === 'saved' ? "This dream isn't here" : 'Still painting…'}</h2>
           <p className="lead">{dream.status === 'failed' ? 'Try telling it again.' : 'Give it a moment and refresh.'}</p>
-          <a className="btn primary" href="/create">New dream</a>
+          <a className="btn primary" href="/">Talk to Orin</a>
         </div>
       </main>
     );
   }
 
-  const summary = isOwner && access?.canUseGuru ? reading?.summary || null : null;
+  const summary = isOwner && access?.canUseGuruReading ? reading?.summary || null : null;
+  const hasScenes = (dream.scenes || []).length > 0;
 
   return (
     <main className="app" style={{ gap: 14 }}>
       <div className="create-top">
-        <a href={isOwner ? '/gallery' : '/'} className="iconbtn" aria-label="Back">←</a>
+        <a href={isOwner ? '/dreams' : '/'} className="iconbtn" aria-label="Back">←</a>
         <span className="eyebrow accent">{dreamDate(dream.created_at)}</span>
         <span className="iconbtn" aria-hidden="true" style={{ visibility: 'hidden' }} />
       </div>
 
       {isOwner ? (
-        <ReelHero dream={dream} date={date} summary={summary} onShareLink={copyLink} />
+        hasScenes && <ReelHero dream={dream} date={date} summary={summary} onShareLink={copyLink} />
       ) : (
         <Player scenes={dream.scenes} date={date} />
       )}
 
       <div className="center">
-        <h2>{dream.title || 'Untitled dream'}</h2>
+        <h2>{dream.title || 'A remembered dream'}</h2>
         <div className="eyebrow" style={{ marginTop: 8 }}>{date}</div>
       </div>
 
-      {isOwner ? (
+      {isOwner && hasScenes && (
         <div className="reel-secondary">
-          <button className="linkbtn" onClick={() => setDetails((v) => !v)} aria-expanded={details}>{details ? 'Hide dream' : 'View dream'}</button>
-          <span aria-hidden="true">·</span>
           <button className="linkbtn" onClick={copyLink}>Copy link</button>
           {dream.is_public && (<><span aria-hidden="true">·</span><button className="linkbtn" onClick={makePrivate}>Turn off link</button></>)}
-          <span aria-hidden="true">·</span>
-          <a className="linkbtn" href="/create">New dream</a>
         </div>
-      ) : (
+      )}
+      {!isOwner && (
         <section className="invite-card">
           <p className="lead">{BRAND.promise}</p>
-          <a className="btn primary block" href="/create">Capture your own dream</a>
+          <a className="btn primary block" href="/">Capture your own dream</a>
         </section>
       )}
 
-      {isOwner && details && (
-        <section className="dream-details" aria-label="Your dream">
-          {dream.transcript && <p className="transcript">“{dream.transcript}”</p>}
-          <ol className="scene-list">
-            {(dream.scenes || []).map((s, i) => <li key={i}>{s.caption}</li>)}
-          </ol>
-        </section>
-      )}
-
-      {isOwner && access && <GuruInvite dreamId={id} access={access} />}
+      {isOwner && <DreamMemory id={id} hasScenes={hasScenes} onTitle={(t) => setDream((d) => ({ ...d, title: t || d.title }))} />}
       <div className={`toast ${toast ? 'on' : ''}`} role="status">{toast}</div>
     </main>
   );

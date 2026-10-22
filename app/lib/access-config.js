@@ -17,7 +17,13 @@ export function accessPlans(env = process.env) {
       canDownload: false,
       canShareLink: flag(env.FREE_CAN_SHARE_LINK, true),        // branded link to the dream page
       canShareFile: flag(env.FREE_CAN_SHARE_FILE, false),       // the MP4 itself
-      canUseGuru: false,
+      // Dream Guru V2: everyone talks to Orin; the allowance and depth differ by plan.
+      canUseGuru: true,
+      guruTextPerDay: num(env.FREE_GURU_TEXT_PER_DAY, 20),     // typed messages per rolling 24 h
+      guruVoicePerDay: num(env.FREE_GURU_VOICE_PER_DAY, 8),    // spoken messages per rolling 24 h
+      recallDepth: num(env.FREE_RECALL_DREAMS, 30),            // most recent dreams Orin can draw on (all stay saved and visible)
+      canViewAdvancedPatterns: false,                          // feelings around recurring things, trends
+      canUseGuruReading: false,                                // the older long-form reading (lib/guru.js)
       generationTier: 'free',
     },
     premium: {
@@ -31,6 +37,11 @@ export function accessPlans(env = process.env) {
       canShareLink: flag(env.PREMIUM_CAN_SHARE_LINK, true),
       canShareFile: flag(env.PREMIUM_CAN_SHARE_FILE, true),
       canUseGuru: true,
+      guruTextPerDay: num(env.PREMIUM_GURU_TEXT_PER_DAY, 150),
+      guruVoicePerDay: num(env.PREMIUM_GURU_VOICE_PER_DAY, 80),
+      recallDepth: num(env.PREMIUM_RECALL_DREAMS, 1000),
+      canViewAdvancedPatterns: true,
+      canUseGuruReading: true,
       generationTier: 'premium',
     },
   };

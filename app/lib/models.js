@@ -4,6 +4,7 @@ export function models(env = process.env) {
   return {
     director: env.DIRECTOR_MODEL || 'gpt-4.1',            // DreamBible + storyboard
     guru: env.GURU_MODEL || 'gpt-4.1',                    // Guru readings and chat
+    memory: env.MEMORY_MODEL || 'gpt-4.1-mini',          // dream memory extraction (structured, cheap)
     narrationLegacy: env.NARRATION_MODEL || 'gpt-4o-mini', // old picture renderer only
     // Speech → text. gpt-transcribe replaces the deprecated gpt-4o-mini-transcribe.
     transcription: env.TRANSCRIPTION_MODEL || 'gpt-transcribe',

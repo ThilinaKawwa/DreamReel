@@ -9,6 +9,7 @@ export const SUPABASE_ANON_KEY =
   process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'sb_publishable_4WxgMv9OSdbzb5LqGv61Ng_W2qdpuQB';
 
 let browserClient;
+let signupPromise = null; // two components asking at once must not create two accounts
 
 /** Client for use in the browser (remembers the login in localStorage). */
 export function getBrowserSupabase() {
@@ -26,9 +27,20 @@ export async function ensureSession() {
   const supabase = getBrowserSupabase();
   const { data } = await supabase.auth.getSession();
   if (data.session) return data.session;
-  const { data: anon, error } = await supabase.auth.signInAnonymously();
-  if (error) throw error;
-  return anon.session;
+  if (!signupPromise) {
+    signupPromise = (async () => {
+      const { data: anon, error } = await supabase.auth.signInAnonymously();
+      if (error) throw error;
+      // Funnel: a new visitor's account now exists. (Behaviour only — no personal data.)
+      const uid = anon.session.user.id;
+      supabase.from('analytics_events').insert([
+        { user_id: uid, event: 'signup_started', props: {}, source: 'web' },
+        { user_id: uid, event: 'signup_completed', props: { anonymous: true }, source: 'web' },
+      ]).then(() => {}, () => {});
+      return anon.session;
+    })().finally(() => { signupPromise = null; });
+  }
+  return signupPromise;
 }
 
 /** Server-side client that acts AS the logged-in user (security rules apply). */

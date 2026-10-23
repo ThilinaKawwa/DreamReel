@@ -7,6 +7,7 @@
 //
 // All long jobs use fal's queue, so a slow model never blocks a server function.
 import { fal } from '@fal-ai/client';
+import { replicateVideoProvider } from './replicate.js';
 
 let configured = false;
 function client() {
@@ -113,6 +114,7 @@ export function o1Input({ startImageUrl, prompt, duration, elements = [] }) {
 }
 
 export function videoProvider(kind) {
+  if (kind === 'replicate-kling-i2v') return replicateVideoProvider();
   const id = VIDEO_ADAPTERS[kind] ? kind : 'kling-i2v';
   const adapter = VIDEO_ADAPTERS[id];
   return {

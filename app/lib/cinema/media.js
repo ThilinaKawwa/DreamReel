@@ -23,6 +23,7 @@ export function allowedProviderUrl(u) {
     const url = new URL(u);
     if (url.protocol !== 'https:') return false;
     if (/(^|\.)fal\.media$/.test(url.host)) return true;
+    if (url.host === 'replicate.delivery' || url.host.endsWith('.replicate.delivery')) return true; // Replicate outputs
     return url.host === 'storage.googleapis.com' && url.pathname.startsWith('/falserverless/');
   } catch { return false; }
 }
